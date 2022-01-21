@@ -24,16 +24,16 @@ import (
 
 func main() {
   publishParams := tackle.PublishParams{
-		Body:       []byte(`{"user_id": "123"}`),
-		RoutingKey: "user-created",
-		Exchange:   "user-exchange",
-		AmqpURL:    "guest@localhost:5467",
-	}
+    Body:       []byte(`{"user_id": "123"}`),
+    RoutingKey: "user-created",
+    Exchange:   "user-exchange",
+    AmqpURL:    "guest@localhost:5467",
+  }
 
-	err := tackle.PublishMessage(&publishParams)
-	if err != nil {
+  err := tackle.PublishMessage(&publishParams)
+  if err != nil {
     log.Info("something went wrong while publishing %v", err)
-	}
+  }
 }
 ```
 
@@ -62,16 +62,16 @@ func main() {
   }
 
   publishParams := tackle.PublishParams{
-		Body:       []byte(`{"user_id": "123"}`),
-		RoutingKey: "user-created",
-		Exchange:   "user-exchange",
-		AmqpURL:    "guest@localhost:5467",
-	}
+    Body:       []byte(`{"user_id": "123"}`),
+    RoutingKey: "user-created",
+    Exchange:   "user-exchange",
+    AmqpURL:    "guest@localhost:5467",
+  }
 
   err := publish.Publish(&publishParams))
-	if err != nil {
+  if err != nil {
     log.Info("something went wrong while publishing %v", err)
-	}
+  }
 }
 ```
 
@@ -130,20 +130,20 @@ Visually this looks like this:
    |---|------------------------------------------------------------------------|
    |   |                                                                        |
    |   |                                    * defined by subscriber service *   |
-   |   |                                                                        |
+   |   v                                                                        |
    |  +-------------------------+                                               |
    |  | user-persister-exchange | <-+                                           |
    |  +------*------------------+   |                                           |
    |         |                      | after N secs                              |
-   |         |                      |                                           |
-   |  +------v---------+   +--------*-------------+    +--------------------+   |
+   |         v                      |                                           |
+   |  +----------------+   +----------------------+    +--------------------+   |
    |  | user-persister |   | user-persister-delay |    | user-perister-dead |   |
    |  +------*---------+   +----------------------+    +--------------------+   |
    |         |                               ^                 ^                |
    +---------|-------------------------------|-----------------|----------------+
              |                               |                 |
              v                               |                 |
-       +-------------------+  ---(on err)----+                 |
+       +-------------------+ ----(on err)----+                 |
        | Consuming Service |                                   |
        +-------------------+ ------------------- (after N err)-+
 ```
