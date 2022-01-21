@@ -1,0 +1,31 @@
+version: '3.6'
+
+services:
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+
+    tty: true
+
+    environment:
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+
+    links:
+      - rabbitmq:rabbitmq
+
+    volumes:
+      - go-pkg-cache:/go
+      - .:/app
+
+  rabbitmq:
+    image: rabbitmq:3.8.17-management-alpine
+    container_name: 'rabbitmq'
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+volumes:
+  go-pkg-cache:
+    driver: local

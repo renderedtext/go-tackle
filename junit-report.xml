@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+	<testsuite tests="3" failures="0" time="0.530000" name="github.com/renderedtext/go-tackle" timestamp="2022-01-21T13:25:18Z">
+		<properties>
+			<property name="go.version" value="go1.17.6 linux/amd64"></property>
+		</properties>
+		<testcase classname="github.com/renderedtext/go-tackle" name="TestConsumerCanBeStartedAndStopped" time="0.210000"></testcase>
+		<testcase classname="github.com/renderedtext/go-tackle" name="TestConsumerCannotBeStartedTwice" time="0.110000"></testcase>
+		<testcase classname="github.com/renderedtext/go-tackle" name="TestProcessorRanOnceAndPublishWork" time="0.210000"></testcase>
+	</testsuite>
+</testsuites>

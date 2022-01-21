@@ -46,7 +46,8 @@ type Consumer struct {
 
 func NewConsumer() *Consumer {
 	return &Consumer{
-		State: StateNotListening,
+		State:  StateNotListening,
+		logger: &defaultLogger{},
 	}
 }
 
@@ -119,18 +120,48 @@ func (c *Consumer) connect(options *Options) error {
 }
 
 func (c *Consumer) close() {
-	if c.channel != nil && !c.channel.IsClosed() {
-		c.logger.Errorf("failed to close channel %s", c.channel.Close())
+	c.closeChannel()
+	c.closeConnection()
+}
+
+func (c *Consumer) closeChannel() {
+	if c.channel == nil {
+		return
+	}
+	if c.channel.IsClosed() {
+		return
 	}
 
-	if c.connection != nil && !c.connection.IsClosed() {
-		c.logger.Errorf("failed to close connection %s", c.connection.Close())
+	err := c.channel.Close()
+	if err != nil {
+		c.logger.Errorf("failed to close channel %v", err)
+	}
+}
+
+func (c *Consumer) closeConnection() {
+	if c.connection == nil {
+		return
+	}
+	if c.connection.IsClosed() {
+		return
+	}
+
+	err := c.connection.Close()
+	if err != nil {
+		c.logger.Errorf("failed to close connection %s", err)
 	}
 }
 
 func (c *Consumer) consume() error {
-	deliveries, err := c.channel.Consume(c.options.GetQueueName(),
-		ConsumerName, AutoAck, Exclusive, NoLocal, NoWait, nil)
+	deliveries, err := c.channel.Consume(
+		c.options.GetQueueName(),
+		ConsumerName,
+		AutoAck,
+		Exclusive,
+		NoLocal,
+		NoWait,
+		nil)
+
 	if err != nil {
 		return err
 	}

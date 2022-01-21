@@ -7,20 +7,20 @@ const (
 )
 
 func ConfigureExchanges(channel *rabbit.Channel, options *Options) error {
-	err := channel.ExchangeDeclare(options.RemoteExchange, "direct", Durable, AutoDeleted,
-		Internal, NoWait, nil)
+	remoteExch := options.RemoteExchange
+	serviceExch := options.GetServiceExchangeName()
+
+	err := channel.ExchangeDeclare(remoteExch, "direct", Durable, AutoDeleted, Internal, NoWait, nil)
 	if err != nil {
 		return err
 	}
 
-	err = channel.ExchangeDeclare(options.GetServiceExchangeName(), "direct", Durable, AutoDeleted,
-		Internal, NoWait, nil)
+	err = channel.ExchangeDeclare(serviceExch, "direct", Durable, AutoDeleted, Internal, NoWait, nil)
 	if err != nil {
 		return err
 	}
 
-	err = channel.ExchangeBind(options.GetServiceExchangeName(), options.RoutingKey, options.RemoteExchange,
-		NoWait, nil)
+	err = channel.ExchangeBind(serviceExch, options.RoutingKey, options.RemoteExchange, NoWait, nil)
 	if err != nil {
 		return err
 	}
@@ -29,33 +29,32 @@ func ConfigureExchanges(channel *rabbit.Channel, options *Options) error {
 }
 
 func ConfigureQueues(channel *rabbit.Channel, options *Options) error {
+	queueOptions := map[string]interface{}{
+		"x-message-ttl": DeadLetterTimeout,
+	}
+
+	retryQueueOptions := map[string]interface{}{
+		"x-message-ttl":             options.GetRetryDelay() * 1000,
+		"x-dead-letter-exchange":    options.GetServiceExchangeName(),
+		"x-dead-letter-routing-key": options.RoutingKey,
+	}
+
 	_, err := channel.QueueDeclare(options.GetQueueName(), Durable, AutoDeleted, Exclusive, NoWait, nil)
 	if err != nil {
 		return err
 	}
 
-	_, err = channel.QueueDeclare(options.GetDeadQueueName(), Durable, AutoDeleted, Exclusive, NoWait,
-		map[string]interface{}{
-			"x-message-ttl": DeadLetterTimeout,
-		})
-
+	_, err = channel.QueueDeclare(options.GetDeadQueueName(), Durable, AutoDeleted, Exclusive, NoWait, queueOptions)
 	if err != nil {
 		return err
 	}
 
-	_, err = channel.QueueDeclare(options.GetDelayQueueName(), Durable, AutoDeleted, Exclusive, NoWait,
-		map[string]interface{}{
-			"x-message-ttl":             options.GetRetryDelay() * 1000,
-			"x-dead-letter-exchange":    options.GetServiceExchangeName(),
-			"x-dead-letter-routing-key": options.RoutingKey,
-		})
-
+	_, err = channel.QueueDeclare(options.GetDelayQueueName(), Durable, AutoDeleted, Exclusive, NoWait, retryQueueOptions)
 	if err != nil {
 		return err
 	}
 
-	err = channel.QueueBind(options.GetQueueName(), options.RoutingKey, options.GetServiceExchangeName(),
-		NoWait, nil)
+	err = channel.QueueBind(options.GetQueueName(), options.RoutingKey, options.GetServiceExchangeName(), NoWait, nil)
 	if err != nil {
 		return err
 	}

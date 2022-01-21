@@ -21,7 +21,13 @@ func PublishMessage(params *PublishParams) error {
 	if err != nil {
 		return err
 	}
+
+	err = publisher.Connect()
 	defer publisher.Close()
+
+	if err != nil {
+		return err
+	}
 
 	return publisher.Publish(params)
 }
@@ -76,16 +82,18 @@ func (p *Publisher) Publish(params *PublishParams) error {
 	return p.channel.Publish(params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, msg)
 }
 
-func (p *Publisher) Close() error {
-	err := p.channel.Close()
-	if err != nil {
-		p.logger.Errorf("failed to close publisher channel %v", err)
+func (p *Publisher) Close() {
+	if p.channel != nil && !p.channel.IsClosed() {
+		err := p.channel.Close()
+		if err != nil {
+			p.logger.Errorf("failed to close publisher channel %v", err)
+		}
 	}
 
-	err = p.connection.Close()
-	if err != nil {
-		p.logger.Errorf("failed to close publisher connection %v", err)
+	if p.connection != nil && !p.connection.IsClosed() {
+		err := p.connection.Close()
+		if err != nil {
+			p.logger.Errorf("failed to close publisher connection %v", err)
+		}
 	}
-
-	return nil
 }
