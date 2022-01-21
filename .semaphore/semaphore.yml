@@ -8,6 +8,11 @@ blocks:
   - name: 'Block #1'
     task:
       jobs:
+        - name: Lint
+          commands:
+            - checkout
+            - make lint
+
         - name: Test
           commands:
             - checkout

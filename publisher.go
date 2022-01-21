@@ -40,13 +40,13 @@ type Publisher struct {
 	connection *rabbit.Connection
 	channel    *rabbit.Channel
 	logger     Logger
-	amqpUrl    string
+	amqpURL    string
 }
 
-func NewPublisher(amqpUrl string) (*Publisher, error) {
+func NewPublisher(amqpURL string) (*Publisher, error) {
 	return &Publisher{
 		logger:  &defaultLogger{},
-		amqpUrl: amqpUrl,
+		amqpURL: amqpURL,
 	}, nil
 }
 
@@ -55,7 +55,7 @@ func (p *Publisher) SetLogger(l Logger) {
 }
 
 func (p *Publisher) Connect() error {
-	connection, err := rabbit.Dial(p.amqpUrl)
+	connection, err := rabbit.Dial(p.amqpURL)
 	if err != nil {
 		return err
 	}

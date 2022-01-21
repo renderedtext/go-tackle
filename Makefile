@@ -1,7 +1,8 @@
 .PHONY: test build
 
 lint:
-	revive -formatter friendly -config lint.toml ./...
+	docker-compose run app go get -u github.com/mgechev/revive
+	docker-compose run app revive -formatter friendly -config lint.toml ./...
 
 test.setup:
 	docker-compose build
