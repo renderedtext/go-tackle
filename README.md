@@ -129,7 +129,7 @@ Visually this looks like this:
    |   |                                                                        |
    |---|------------------------------------------------------------------------|
    |   |                                                                        |
-   |   |                                    * defined by subscriber service *   |
+   |   |                                     * defined by subscriber service *  |
    |   v                                                                        |
    |  +-------------------------+                                               |
    |  | user-persister-exchange | <-+                                           |
