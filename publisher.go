@@ -29,6 +29,11 @@ func PublishMessage(params *PublishParams) error {
 		return err
 	}
 
+	err = publisher.ExchangeDeclare(params.Exchange)
+	if err != nil {
+		return err
+	}
+
 	return publisher.Publish(params)
 }
 
@@ -70,6 +75,10 @@ func (p *Publisher) Connect() error {
 	p.channel = channel
 
 	return nil
+}
+
+func (p *Publisher) ExchangeDeclare(exchange string) error {
+	return p.channel.ExchangeDeclare(exchange, "direct", Durable, AutoDeleted, Internal, NoWait, nil)
 }
 
 func (p *Publisher) Publish(params *PublishParams) error {
