@@ -235,15 +235,15 @@ func (c *Consumer) handleError(delivery *rabbit.Delivery, err error) error {
 	value, keyExists := delivery.Headers["retry_count"]
 	retryCount, keyIsInteger := value.(int32)
 
-	if keyExists && keyIsInteger {
-		if retryCount < c.options.GetRetryLimit() {
-			return c.sendToDelayQueue(retryCount+1, delivery.Body)
-		} else {
-			return c.sendToDeadQueue(delivery.Body)
-		}
-	} else {
+	if !keyExists || !keyIsInteger {
 		return c.sendToDelayQueue(1, delivery.Body)
 	}
+
+	if retryCount < c.options.GetRetryLimit() {
+		return c.sendToDelayQueue(retryCount+1, delivery.Body)
+	}
+
+	return c.sendToDeadQueue(delivery.Body)
 }
 
 func (c *Consumer) ackOnSuccessfulSend(delivery *rabbit.Delivery) {
