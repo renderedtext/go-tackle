@@ -1,6 +1,7 @@
 package tackle
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -75,4 +76,29 @@ func TestProcessorRanOnceAndPublishWork(t *testing.T) {
 	}
 	assert.Eventually(t, func() bool { return 1 == counter.count }, time.Second, 100*time.Millisecond)
 	consumer.Stop()
+}
+
+func TestConsumerRetry(t *testing.T) {
+	consumer := NewConsumer()
+	counter := 0
+
+	go consumer.Start(&options, func(delivery Delivery) {
+		fmt.Printf("here")
+		// counter++
+		delivery.Retry("hello")
+	})
+	defer consumer.Stop()
+
+	assert.Eventually(t, func() bool { return counter > 10 }, 10*time.Second, 1*time.Second)
+
+	params := PublishParams{
+		Body:       []byte("{'test': 'message' }"),
+		Headers:    nil,
+		AmqpURL:    options.URL,
+		RoutingKey: options.RoutingKey,
+		Exchange:   options.RemoteExchange,
+	}
+	err := PublishMessage(&params)
+	assert.Nil(t, err)
+
 }

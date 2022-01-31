@@ -10,9 +10,9 @@ type Logger interface {
 type defaultLogger struct{}
 
 func (l *defaultLogger) Infof(format string, a ...interface{}) {
-	log.Printf("TACKLE: "+format, a)
+	log.Printf("TACKLE: "+format, a...)
 }
 
 func (l *defaultLogger) Errorf(format string, a ...interface{}) {
-	log.Printf("(error) TACKLE: "+format, a)
+	log.Printf("(error) TACKLE: "+format, a...)
 }
