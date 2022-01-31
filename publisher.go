@@ -1,6 +1,8 @@
 package tackle
 
 import (
+	"fmt"
+
 	rabbit "github.com/rabbitmq/amqp091-go"
 )
 
@@ -82,6 +84,9 @@ func (p *Publisher) ExchangeDeclare(exchange string) error {
 }
 
 func (p *Publisher) Publish(params *PublishParams) error {
+	fmt.Println("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	fmt.Println(params.Headers)
+
 	msg := rabbit.Publishing{
 		Body:         params.Body,
 		Headers:      params.Headers,

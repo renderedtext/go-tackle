@@ -31,7 +31,7 @@ const (
 	NoLocal      = false
 )
 
-type ProcessorFunc func(Delivery)
+type ProcessorFunc func(Delivery) error
 
 type Consumer struct {
 	options    *Options
@@ -205,13 +205,15 @@ func (c *Consumer) monitorConnection() {
 
 func (c *Consumer) handleDeliveries(deliveries <-chan rabbit.Delivery) {
 	for delivery := range deliveries {
-		c.processor(NewDelivery(&delivery, c.handleError))
+		err := c.processor(NewDelivery(&delivery))
+		if err != nil {
+			c.handleError(&delivery, err)
+		}
 	}
 }
 
-func (c *Consumer) handleError(delivery *rabbit.Delivery, message string) {
-	log.Print(message)
-	var err error
+func (c *Consumer) handleError(delivery *rabbit.Delivery, err error) {
+	log.Print(err.Error())
 
 	value, keyExists := delivery.Headers["retry_count"]
 	retryCount, keyIsInteger := value.(int32)
@@ -251,6 +253,7 @@ func (c *Consumer) nackOnFailureToSend(delivery *rabbit.Delivery) {
 func (c *Consumer) sendToDelayQueue(retryCount int32, body []byte) error {
 	queueName := c.options.GetDelayQueueName()
 	c.logger.Infof("sending message to retry queue %s with retry count of %d", queueName, retryCount)
+
 	params := PublishParams{
 		Body:       body,
 		Headers:    map[string]interface{}{"retry_count": retryCount},

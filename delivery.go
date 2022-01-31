@@ -7,17 +7,15 @@ import (
 type Delivery interface {
 	Ack() error
 	Nack(requeue bool) error
-	Retry(message string)
 	Body() []byte
 }
 
 type amqpDelivery struct {
-	dlry        *rabbit.Delivery
-	handleError func(*rabbit.Delivery, string)
+	dlry *rabbit.Delivery
 }
 
-func NewDelivery(d *rabbit.Delivery, h func(*rabbit.Delivery, string)) Delivery {
-	return &amqpDelivery{dlry: d, handleError: h}
+func NewDelivery(d *rabbit.Delivery) Delivery {
+	return &amqpDelivery{dlry: d}
 }
 
 func (d *amqpDelivery) Ack() error {
@@ -30,10 +28,6 @@ func (d *amqpDelivery) Nack(requeue bool) error {
 
 func (d *amqpDelivery) Body() []byte {
 	return d.dlry.Body
-}
-
-func (d *amqpDelivery) Retry(message string) {
-	d.handleError(d.dlry, message)
 }
 
 type fakeDelivery struct {

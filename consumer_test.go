@@ -18,7 +18,7 @@ var options = Options{
 func TestConsumerCanBeStartedAndStopped(t *testing.T) {
 	amqpConsumer := NewConsumer()
 	go func() {
-		err := amqpConsumer.Start(&options, func(Delivery) {})
+		err := amqpConsumer.Start(&options, func(Delivery) error { return nil })
 		if err != nil {
 			t.Error(err)
 		}
@@ -34,7 +34,7 @@ func TestConsumerCanBeStartedAndStopped(t *testing.T) {
 func TestConsumerCannotBeStartedTwice(t *testing.T) {
 	consumer := NewConsumer()
 	go func() {
-		err := consumer.Start(&options, func(Delivery) {})
+		err := consumer.Start(&options, func(Delivery) error { return nil })
 		if err != nil {
 			t.Error(err)
 		}
@@ -42,7 +42,7 @@ func TestConsumerCannotBeStartedTwice(t *testing.T) {
 	defer consumer.Stop()
 	assert.Eventually(t, func() bool { return consumer.State == StateListening }, time.Second, 100*time.Millisecond)
 
-	err := consumer.Start(&options, func(delivery Delivery) {})
+	err := consumer.Start(&options, func(delivery Delivery) error { return nil })
 	assert.NotNil(t, err)
 }
 
@@ -53,13 +53,11 @@ func TestProcessorRanOnceAndPublishWork(t *testing.T) {
 
 	consumer := NewConsumer()
 	go func() {
-		err := consumer.Start(&options, func(delivery Delivery) {
+		err := consumer.Start(&options, func(delivery Delivery) error {
 			counter.count++
-			delivery.Ack()
+			return nil
 		})
-		if err != nil {
-			t.Error(err)
-		}
+		assert.Nil(t, err)
 	}()
 
 	assert.Eventually(t, func() bool { return consumer.State == StateListening }, time.Second, 100*time.Millisecond)
@@ -82,10 +80,8 @@ func TestConsumerRetry(t *testing.T) {
 	consumer := NewConsumer()
 	counter := 0
 
-	go consumer.Start(&options, func(delivery Delivery) {
-		fmt.Printf("here")
-		// counter++
-		delivery.Retry("hello")
+	go consumer.Start(&options, func(delivery Delivery) error {
+		return fmt.Errorf("some error happened")
 	})
 	defer consumer.Stop()
 
