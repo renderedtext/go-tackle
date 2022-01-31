@@ -96,6 +96,10 @@ func TestConsumerRetry(t *testing.T) {
 	})
 	defer consumer.Stop()
 
+	time.Sleep(1 * time.Second)
+	_, err := consumer.channel.QueuePurge(options.GetDeadQueueName(), false)
+	assert.Nil(t, err)
+
 	params := PublishParams{
 		Body:       []byte("hello"),
 		Headers:    nil,
@@ -103,9 +107,12 @@ func TestConsumerRetry(t *testing.T) {
 		RoutingKey: options.RoutingKey,
 		Exchange:   options.RemoteExchange,
 	}
-	err := PublishMessage(&params)
+	err = PublishMessage(&params)
 	assert.Nil(t, err)
 
 	assert.Eventually(t, func() bool { return counter > 5 }, 10*time.Second, 1*time.Second)
-	assert.Equal(t, 1, consumer.MessagesSentToDeadQueue)
+
+	deadQueue, err := consumer.channel.QueueInspect(options.GetDeadQueueName())
+	assert.Nil(t, err)
+	assert.Equal(t, 1, deadQueue.Messages)
 }
