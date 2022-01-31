@@ -107,5 +107,5 @@ func TestConsumerRetry(t *testing.T) {
 	assert.Nil(t, err)
 
 	assert.Eventually(t, func() bool { return counter > 5 }, 10*time.Second, 1*time.Second)
-	assert.Equal(t, 1, consumer.MessagesSendToDeadQueue)
+	assert.Equal(t, 1, consumer.MessagesSentToDeadQueue)
 }

@@ -34,7 +34,7 @@ const (
 type ProcessorFunc func(Delivery) error
 
 type Consumer struct {
-	MessagesSendToDeadQueue int
+	MessagesSentToDeadQueue int
 	State                   string
 
 	options    *Options
@@ -49,7 +49,7 @@ type Consumer struct {
 func NewConsumer() *Consumer {
 	return &Consumer{
 		State:                   StateNotListening,
-		MessagesSendToDeadQueue: 0,
+		MessagesSentToDeadQueue: 0,
 		logger:                  &defaultLogger{},
 	}
 }
@@ -281,7 +281,7 @@ func (c *Consumer) sendToDelayQueue(retryCount int32, body []byte) error {
 }
 
 func (c *Consumer) sendToDeadQueue(body []byte) error {
-	c.MessagesSendToDeadQueue++
+	c.MessagesSentToDeadQueue++
 
 	queueName := c.options.GetDeadQueueName()
 	c.logger.Infof("sending message to dead queue %s", queueName)
