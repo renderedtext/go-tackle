@@ -34,11 +34,13 @@ const (
 type ProcessorFunc func(Delivery) error
 
 type Consumer struct {
+	MessagesSendToDeadQueue int
+	State                   string
+
 	options    *Options
 	connection *rabbit.Connection
 	channel    *rabbit.Channel
 	shutdown   chan bool
-	State      string
 	processor  ProcessorFunc
 	mu         sync.Mutex
 	logger     Logger
@@ -46,8 +48,9 @@ type Consumer struct {
 
 func NewConsumer() *Consumer {
 	return &Consumer{
-		State:  StateNotListening,
-		logger: &defaultLogger{},
+		State:                   StateNotListening,
+		MessagesSendToDeadQueue: 0,
+		logger:                  &defaultLogger{},
 	}
 }
 
@@ -206,31 +209,40 @@ func (c *Consumer) monitorConnection() {
 func (c *Consumer) handleDeliveries(deliveries <-chan rabbit.Delivery) {
 	for delivery := range deliveries {
 		err := c.processor(NewDelivery(&delivery))
-		if err != nil {
-			c.handleError(&delivery, err)
-		}
+
+		c.handleProcessingResult(&delivery, err)
 	}
 }
 
-func (c *Consumer) handleError(delivery *rabbit.Delivery, err error) {
-	log.Print(err.Error())
-
-	value, keyExists := delivery.Headers["retry_count"]
-	retryCount, keyIsInteger := value.(int32)
-	if keyExists && keyIsInteger {
-		if retryCount < c.options.GetRetryLimit() {
-			err = c.sendToDelayQueue(retryCount+1, delivery.Body)
-		} else {
-			err = c.sendToDeadQueue(delivery.Body)
-		}
-	} else {
-		err = c.sendToDelayQueue(1, delivery.Body)
+func (c *Consumer) handleProcessingResult(delivery *rabbit.Delivery, err error) {
+	// If there were no errors while processing => send Ack
+	if err == nil {
+		c.ackOnSuccessfulSend(delivery)
+		return
 	}
 
-	if err != nil {
+	// Otherwhise, handle the error
+	c.logger.Errorf("failed to process message, err: %s", err.Error())
+
+	if err := c.handleError(delivery, err); err != nil {
 		c.nackOnFailureToSend(delivery)
 	} else {
 		c.ackOnSuccessfulSend(delivery)
+	}
+}
+
+func (c *Consumer) handleError(delivery *rabbit.Delivery, err error) error {
+	value, keyExists := delivery.Headers["retry_count"]
+	retryCount, keyIsInteger := value.(int32)
+
+	if keyExists && keyIsInteger {
+		if retryCount < c.options.GetRetryLimit() {
+			return c.sendToDelayQueue(retryCount+1, delivery.Body)
+		} else {
+			return c.sendToDeadQueue(delivery.Body)
+		}
+	} else {
+		return c.sendToDelayQueue(1, delivery.Body)
 	}
 }
 
@@ -254,25 +266,35 @@ func (c *Consumer) sendToDelayQueue(retryCount int32, body []byte) error {
 	queueName := c.options.GetDelayQueueName()
 	c.logger.Infof("sending message to retry queue %s with retry count of %d", queueName, retryCount)
 
-	params := PublishParams{
-		Body:       body,
-		Headers:    map[string]interface{}{"retry_count": retryCount},
-		AmqpURL:    c.options.URL,
-		RoutingKey: queueName,
-	}
-	return PublishMessage(&params)
+	return c.channel.Publish(
+		"", // exchange
+		queueName,
+		false, // mandatory
+		false, // immediate
+		rabbit.Publishing{
+			ContentType: "text/plain",
+			Body:        body,
+			Headers: rabbit.Table(map[string]interface{}{
+				"retry_count": retryCount,
+			}),
+		})
 }
 
 func (c *Consumer) sendToDeadQueue(body []byte) error {
+	c.MessagesSendToDeadQueue++
+
 	queueName := c.options.GetDeadQueueName()
 	c.logger.Infof("sending message to dead queue %s", queueName)
-	params := PublishParams{
-		Body:       body,
-		Headers:    nil,
-		AmqpURL:    c.options.URL,
-		RoutingKey: queueName,
-	}
-	return PublishMessage(&params)
+
+	return c.channel.Publish(
+		"", // exchange
+		queueName,
+		false, // mandatory
+		false, // immediate
+		rabbit.Publishing{
+			ContentType: "text/plain",
+			Body:        body,
+		})
 }
 
 func (c *Consumer) retryWithConstantWait(task string, maxAttempts int, wait time.Duration, f func() error) error {

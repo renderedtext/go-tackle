@@ -69,9 +69,8 @@ func TestProcessorRanOnceAndPublishWork(t *testing.T) {
 		Exchange:   options.RemoteExchange,
 	}
 	err := PublishMessage(&params)
-	if err != nil {
-		t.Error(err)
-	}
+	assert.Nil(t, err)
+
 	assert.Eventually(t, func() bool { return 1 == counter.count }, time.Second, 100*time.Millisecond)
 	consumer.Stop()
 }
@@ -80,15 +79,25 @@ func TestConsumerRetry(t *testing.T) {
 	consumer := NewConsumer()
 	counter := 0
 
-	go consumer.Start(&options, func(delivery Delivery) error {
-		return fmt.Errorf("some error happened")
+	options := Options{
+		URL:            "amqp://guest:guest@rabbitmq:5672",
+		RemoteExchange: "test.remote-exchange",
+		Service:        "test.service",
+		RoutingKey:     "test-routing-key",
+		RetryDelay:     1,
+		RetryLimit:     5,
+	}
+
+	go consumer.Start(&options, func(d Delivery) error {
+		counter++
+		fmt.Printf("processing, %s\n", string(d.Body()))
+
+		return fmt.Errorf("not able to handle it")
 	})
 	defer consumer.Stop()
 
-	assert.Eventually(t, func() bool { return counter > 10 }, 10*time.Second, 1*time.Second)
-
 	params := PublishParams{
-		Body:       []byte("{'test': 'message' }"),
+		Body:       []byte("hello"),
 		Headers:    nil,
 		AmqpURL:    options.URL,
 		RoutingKey: options.RoutingKey,
@@ -97,4 +106,6 @@ func TestConsumerRetry(t *testing.T) {
 	err := PublishMessage(&params)
 	assert.Nil(t, err)
 
+	assert.Eventually(t, func() bool { return counter > 5 }, 10*time.Second, 1*time.Second)
+	assert.Equal(t, 1, consumer.MessagesSendToDeadQueue)
 }
