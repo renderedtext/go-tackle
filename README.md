@@ -68,7 +68,7 @@ func main() {
     AmqpURL:    "guest@localhost:5467",
   }
 
-  err := publish.Publish(&publishParams)
+  err := publisher.Publish(&publishParams)
   if err != nil {
     log.Info("something went wrong while publishing %v", err)
   }
