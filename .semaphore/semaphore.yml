@@ -2,18 +2,15 @@ version: v1.0
 name: Initial Pipeline
 agent:
   machine:
-    type: e1-standard-2
-    os_image: ubuntu2004
+    type: s1-windows-brrr
+    
 blocks:
-  - name: 'Block #1'
+  - name: 'Hello Windows'
     task:
+      agent:
+        machine:
+          type: s1-windows-brrr
       jobs:
-        - name: Lint
+        - name: Hello
           commands:
-            - checkout
-            - make lint
-
-        - name: Test
-          commands:
-            - checkout
-            - make test
+            - Write-Host "Hello"
