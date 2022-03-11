@@ -9,7 +9,7 @@ blocks:
     task:
       agent:
         machine:
-          type: s1-windows-brrr
+          type: s1-windows-brrrr
       jobs:
         - name: Hello
           commands:
