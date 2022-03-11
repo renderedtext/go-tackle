@@ -2,14 +2,14 @@ version: v1.0
 name: Initial Pipeline
 agent:
   machine:
-    type: s1-windows-brrrr
+    type: s1-windows-2
     
 blocks:
   - name: 'Hello Windows'
     task:
       agent:
         machine:
-          type: s1-windows-brrrr
+          type: s1-windows-2
       jobs:
         - name: Hello
           commands:
