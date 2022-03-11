@@ -2,7 +2,7 @@ version: v1.0
 name: Initial Pipeline
 agent:
   machine:
-    type: s1-windows-brrr
+    type: s1-windows-brrrr
     
 blocks:
   - name: 'Hello Windows'
