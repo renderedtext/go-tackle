@@ -13,3 +13,16 @@ blocks:
             - echo "hello"
             - uname
           parallelism: 5
+    dependencies: []
+  - name: Hello Windows
+    dependencies: []
+    task:
+      agent:
+        machine:
+          type: s1-windows-aws-pool
+          os_image: ''
+      jobs:
+        - name: Hello
+          commands:
+            - echo "hello"
+          parallelism: 5
