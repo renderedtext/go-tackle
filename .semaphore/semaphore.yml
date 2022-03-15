@@ -2,18 +2,14 @@ version: v1.0
 name: Initial Pipeline
 agent:
   machine:
-    type: e1-standard-2
-    os_image: ubuntu2004
+    type: s1-linux-aws-pool
+    os_image: ''
 blocks:
-  - name: 'Block #1'
+  - name: Hello Linux
     task:
       jobs:
-        - name: Lint
+        - name: Hello
           commands:
-            - checkout
-            - make lint
-
-        - name: Test
-          commands:
-            - checkout
-            - make test
+            - echo "hello"
+            - uname
+          parallelism: 5
