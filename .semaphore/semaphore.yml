@@ -10,4 +10,5 @@ blocks:
         - name: Lint
           commands:
             - checkout
+            - sleep 60
             - echo "here"
