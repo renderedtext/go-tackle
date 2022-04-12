@@ -2,18 +2,12 @@ version: v1.0
 name: Initial Pipeline
 agent:
   machine:
-    type: e1-standard-2
-    os_image: ubuntu2004
+    type: s1-brrr
 blocks:
-  - name: 'Block #1'
+  - name: 'First'
     task:
       jobs:
         - name: Lint
           commands:
             - checkout
-            - make lint
-
-        - name: Test
-          commands:
-            - checkout
-            - make test
+            - echo "here"
