@@ -14,4 +14,3 @@ blocks:
             - echo $SEMAPHORE_OIDC_TOKEN
             - echo $SEMAPHORE_OIDC_TOKEN | awk -F '.' '{ print $1 }' | base64 --decode
             - echo $SEMAPHORE_OIDC_TOKEN | awk -F '.' '{ print $2 "=" }' | base64 --decode
-            - echo $SEMAPHORE_OIDC_TOKEN | awk -F '.' '{ print $3 }' | base64 --decode
