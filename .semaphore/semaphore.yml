@@ -8,12 +8,8 @@ blocks:
   - name: 'Block #1'
     task:
       jobs:
-        - name: Lint
+        - name: 'Job #1'
           commands:
             - checkout
-            - make lint
-
-        - name: Test
-          commands:
-            - checkout
-            - make test
+            - echo $SEMAPHORE_OIDC_TOKEN
+            - echo $SEMAPHORE_OIDC_TOKEN | base64 --decode
