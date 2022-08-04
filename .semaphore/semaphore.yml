@@ -14,3 +14,7 @@ blocks:
             - echo $SEMAPHORE_OIDC_TOKEN
             - echo $SEMAPHORE_OIDC_TOKEN | awk -F '.' '{ print $1 }' | base64 --decode
             - echo $SEMAPHORE_OIDC_TOKEN | awk -F '.' '{ print $2 "=" }' | base64 --decode
+            - echo $SEMAPHORE_OIDC_TOKEN > /tmp/oidc_token
+            - export POOL_PATH="projects/525291099507/locations/global/workloadIdentityPools/semaphore-preprod/providers/rtx-semaphore-preprod"
+            - export SERVICE_ACCOUNT="oidc-test-account@semaphore2-stg.iam.gserviceaccount.com"
+            - gcloud iam workload-identity-pools create-cred-config $POOL_PATH --credential-source-file=/tmp/oidc_token --output-file=/tmp/creds --service-account="$SERVICE_ACCOUNT"
