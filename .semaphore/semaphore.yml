@@ -20,8 +20,8 @@ blocks:
             - sudo apt-get update && sudo apt-get --only-upgrade -y install google-cloud-sdk-skaffold kubectl google-cloud-sdk-anthos-auth google-cloud-sdk-minikube google-cloud-sdk google-cloud-sdk-app-engine-grpc google-cloud-sdk-kind google-cloud-sdk-pubsub-emulator google-cloud-sdk-app-engine-go google-cloud-sdk-firestore-emulator google-cloud-sdk-cloud-build-local google-cloud-sdk-datastore-emulator google-cloud-sdk-kpt google-cloud-sdk-app-engine-python google-cloud-sdk-spanner-emulator google-cloud-sdk-cbt google-cloud-sdk-bigtable-emulator google-cloud-sdk-app-engine-python-extras google-cloud-sdk-datalab google-cloud-sdk-app-engine-java
             - export POOL_PATH="projects/525291099507/locations/global/workloadIdentityPools/semaphore-preprod/providers/rtx-semaphore-preprod"
             - export SERVICE_ACCOUNT="oidc-test-account@semaphore2-stg.iam.gserviceaccount.com"
-            - gcloud iam workload-identity-pools create-cred-config $POOL_PATH --credential-source-file=/tmp/oidc_token --output-file=/tmp/creds --service-account="$SERVICE_ACCOUNT"
+            - gcloud iam workload-identity-pools create-cred-config $POOL_PATH --credential-source-file=/tmp/oidc_token --credential-source-type=text --output-file=/tmp/creds --service-account="$SERVICE_ACCOUNT"
             - cat /tmp/creds
-            - gcloud auth login --brief --cred-file /tmp/creds2
+            - gcloud auth login --brief --cred-file /tmp/creds
             - cat /tmp/creds
             - gcloud iam service-accounts get-iam-policy $SERVICE_ACCOUNT
