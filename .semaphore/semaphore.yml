@@ -22,4 +22,5 @@ blocks:
             - gcloud iam workload-identity-pools create-cred-config $POOL_PATH --credential-source-file=/tmp/oidc_token --output-file=/tmp/creds --service-account="$SERVICE_ACCOUNT"
             - cat /tmp/creds
             - gcloud auth login --brief --cred-file /tmp/creds
+            - cat /tmp/creds
             - gcloud iam service-accounts get-iam-policy $SERVICE_ACCOUNT
