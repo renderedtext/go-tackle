@@ -7,8 +7,7 @@
   "credential_source": {
     "file": "/tmp/oidc_token",
     "format": {
-      "type": "json",
-      "subject_token_field_name": "access_token"
+      "type": "text"
     }
   }
 }
