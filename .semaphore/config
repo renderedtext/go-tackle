@@ -1,13 +1,14 @@
 {
   "type": "external_account",
-  "audience": "//iam.googleapis.com/projects/525291099507/locations/global/workloadIdentityPools/semaphore-preprod/providers/rtx-semaphore-preprod",
+  "audience": "//iam.googleapis.com/projects/525291099507/locations/global/workloadIdentityPools/semaphore-preprod/providers/semaphore-prod-rtx",
   "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
   "token_url": "https://sts.googleapis.com/v1/token",
   "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/oidc-test-account@semaphore2-stg.iam.gserviceaccount.com:generateAccessToken",
   "credential_source": {
     "file": "/tmp/oidc_token",
     "format": {
-      "type": "text"
+      "type": "json",
+      "subject_token_field_name": "access_token"
     }
   }
 }
