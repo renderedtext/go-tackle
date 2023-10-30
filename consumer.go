@@ -21,7 +21,6 @@ const (
 	PrefetchSize  = 0
 	Global        = true
 
-	ConsumerName = ""
 	Durable      = true
 	Exclusive    = false
 	AutoAck      = false
@@ -35,7 +34,8 @@ type ProcessorFunc func(Delivery) error
 
 type Consumer struct {
 	State string
-
+    
+	name       string 
 	options    *Options
 	connection *rabbit.Connection
 	channel    *rabbit.Channel
@@ -49,6 +49,14 @@ func NewConsumer() *Consumer {
 	return &Consumer{
 		State:  StateNotListening,
 		logger: &defaultLogger{},
+	}
+}
+
+func NewConsumerWithName(name string) *Consumer {
+	return &Consumer{
+		State:  StateNotListening,
+		logger: &defaultLogger{},
+		name: name,
 	}
 }
 
@@ -156,7 +164,7 @@ func (c *Consumer) closeConnection() {
 func (c *Consumer) consume() error {
 	deliveries, err := c.channel.Consume(
 		c.options.GetQueueName(),
-		ConsumerName,
+		c.name,
 		AutoAck,
 		Exclusive,
 		NoLocal,
