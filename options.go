@@ -9,6 +9,7 @@ const (
 
 type Options struct {
 	URL            string
+	ConnectionName string
 	RemoteExchange string
 	Service        string
 	RoutingKey     string
@@ -22,6 +23,13 @@ func (o *Options) GetServiceExchangeName() string {
 
 func (o *Options) GetQueueName() string {
 	return fmt.Sprintf("%s.%s", o.Service, o.RoutingKey)
+}
+
+func (o *Options) GetConnectionName() string {
+	if o.ConnectionName != "" {
+		return o.ConnectionName
+	}
+	return ConsumerName
 }
 
 func (o *Options) GetDeadQueueName() string {
