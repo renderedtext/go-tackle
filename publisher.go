@@ -46,13 +46,19 @@ type Publisher struct {
 	channel    *rabbit.Channel
 	logger     Logger
 	amqpURL    string
+	connName   string
 }
 
 func NewPublisher(amqpURL string) (*Publisher, error) {
 	return &Publisher{
-		logger:  &defaultLogger{},
-		amqpURL: amqpURL,
+		logger:   &defaultLogger{},
+		amqpURL:  amqpURL,
+		connName: "tackle-publisher",
 	}, nil
+}
+
+func (p *Publisher) SetConnectionName(connName string) {
+	p.connName = connName
 }
 
 func (p *Publisher) SetLogger(l Logger) {
@@ -60,7 +66,13 @@ func (p *Publisher) SetLogger(l Logger) {
 }
 
 func (p *Publisher) Connect() error {
-	connection, err := rabbit.Dial(p.amqpURL)
+	config := rabbit.Config{Properties: make(rabbit.Table)}
+	if p.connName == "" {
+		p.connName = "tackle.publisher"
+	}
+	config.Properties["connection_name"] = p.connName
+
+	connection, err := rabbit.DialConfig(p.amqpURL, config)
 	if err != nil {
 		return err
 	}
