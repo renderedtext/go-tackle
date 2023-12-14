@@ -20,7 +20,6 @@ check.deps: check.prepare
 		bash -c 'cd /app && $(SECURITY_TOOLBOX_TMP_DIR)/dependencies --language go -d'
 
 lint:
-	docker-compose run app go get -u github.com/mgechev/revive
 	docker-compose run app revive -formatter friendly -config lint.toml ./...
 
 test.setup:
