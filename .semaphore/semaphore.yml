@@ -5,7 +5,27 @@ agent:
     type: e1-standard-2
     os_image: ubuntu2004
 blocks:
-  - name: 'Block #1'
+  - name: "Security checks"
+    task:
+      secrets:
+        - name: security-toolbox-shared-read-access
+      prologue:
+        commands:
+          - checkout
+          - mv ~/.ssh/security-toolbox ~/.ssh/id_rsa
+          - sudo chmod 600 ~/.ssh/id_rsa
+      epilogue:
+        always:
+          commands:
+            - if [ -f results.xml ]; then test-results publish results.xml; fi
+      jobs:
+        - name: Check dependencies
+          commands:
+            - make check.deps
+        - name: Check code
+          commands:
+            - make check.static
+  - name: 'Lint & test'
     task:
       jobs:
         - name: Lint
