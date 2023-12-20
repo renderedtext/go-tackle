@@ -45,6 +45,9 @@ however, if you plan to publish large batches of messages, it will be more
 efficient to create a dedicated publisher that keeps the connection open
 for a longer duration.
 
+`tackle.NewPublisher` creates a publisher that will lazily create the connection,
+re-connecting if the current connection is closed for some reason.
+
 ``` golang
 package main
 
@@ -54,12 +57,7 @@ import (
 
 func main() {
   publisher := tackle.NewPublisher("guest@localhost:5467")
-
-  err := publisher.Connect()
   defer publisher.Close()
-  if err != nil {
-    log.Info("failed to connect to rabbitmq server %v", err)
-  }
 
   publishParams := tackle.PublishParams{
     Body:       []byte(`{"user_id": "123"}`),
