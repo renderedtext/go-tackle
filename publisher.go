@@ -85,6 +85,7 @@ func (p *Publisher) ExchangeDeclare(exchange string) error {
 		return err
 	}
 
+	defer channel.Close()
 	return channel.ExchangeDeclare(exchange, "direct", Durable, AutoDeleted, Internal, NoWait, nil)
 }
 
