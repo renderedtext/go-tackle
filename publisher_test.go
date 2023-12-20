@@ -40,7 +40,6 @@ func Test__Publisher(t *testing.T) {
 		}
 
 		require.Eventually(t, func() bool { return counter.count == 10 }, 2*time.Second, 100*time.Millisecond)
-		require.True(t, false)
 	})
 
 	t.Run("publish reconnects if connection is closed", func(t *testing.T) {
@@ -59,6 +58,5 @@ func Test__Publisher(t *testing.T) {
 		}
 
 		require.Eventually(t, func() bool { return counter.count == 10 }, 5*time.Second, 500*time.Millisecond)
-		require.True(t, false)
 	})
 }
