@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	rabbit "github.com/rabbitmq/amqp091-go"
 )
@@ -21,7 +22,7 @@ type PublishParams struct {
 }
 
 func PublishMessage(params *PublishParams) error {
-	publisher, err := NewPublisher(params.AmqpURL)
+	publisher, err := NewPublisher(params.AmqpURL, nil)
 	if err != nil {
 		return err
 	}
@@ -45,30 +46,44 @@ type Publish interface {
 }
 
 type Publisher struct {
-	connection       *rabbit.Connection
-	connectOnce      sync.Once
-	connectionErr    error
-	reconnectionLock sync.Mutex
+	connection         *rabbit.Connection
+	connectFunc        func() (*rabbit.Connection, error)
+	connectOnce        sync.Once
+	connectionErr      error
+	reconnectionLock   sync.Mutex
+	connectionInFlight bool
 
 	logger  Logger
 	amqpURL string
 }
 
-func NewPublisher(amqpURL string) (*Publisher, error) {
-	return &Publisher{
-		logger:  &defaultLogger{},
-		amqpURL: amqpURL,
-	}, nil
+func NewPublisher(amqpURL string, connectFunc func() (*rabbit.Connection, error)) (*Publisher, error) {
+	p := Publisher{
+		logger:      &defaultLogger{},
+		amqpURL:     amqpURL,
+		connectFunc: connectFunc,
+	}
+
+	if p.connectFunc == nil {
+		p.connectFunc = p.connect
+	}
+
+	return &p, nil
 }
 
 func (p *Publisher) SetLogger(l Logger) {
 	p.logger = l
 }
 
+func (p *Publisher) connect() (*rabbit.Connection, error) {
+	p.logger.Infof("Connecting...")
+	return rabbit.Dial(p.amqpURL)
+}
+
 func (p *Publisher) getConnection() (*rabbit.Connection, error) {
 	p.connectOnce.Do(func() {
-		p.logger.Infof("Connection is closed - connecting...")
-		p.connection, p.connectionErr = rabbit.Dial(p.amqpURL)
+		p.connection, p.connectionErr = p.connectFunc()
+		p.connectionInFlight = false
 	})
 
 	return p.connection, p.connectionErr
@@ -94,6 +109,28 @@ func (p *Publisher) Publish(params *PublishParams) error {
 }
 
 func (p *Publisher) PublishWithContext(ctx context.Context, params *PublishParams) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			err := p.publishWithContext(ctx, params)
+			if err == nil {
+				return nil
+			}
+
+			// If this is not a connection error, we return the error.
+			if p.connectionErr == nil {
+				return err
+			}
+
+			p.logger.Errorf("Error getting connection for %s: %v - retrying", string(params.Body), err)
+			p.reconnect()
+		}
+	}
+}
+
+func (p *Publisher) publishWithContext(ctx context.Context, params *PublishParams) error {
 	connection, err := p.getConnection()
 	if err != nil {
 		return err
@@ -128,11 +165,27 @@ func (p *Publisher) reconnectAndPublish(ctx context.Context, params *PublishPara
 
 	// We only update the sync.Once controlling the connection if the connection is closed.
 	// The connection being closed should only happen for the first message coming through.
-	if p.connection.IsClosed() {
+	if !p.connectionInFlight {
+		p.connectionInFlight = true
 		p.connectOnce = sync.Once{}
 	}
 
-	return p.PublishWithContext(ctx, params)
+	return p.publishWithContext(ctx, params)
+}
+
+func (p *Publisher) reconnect() {
+	p.reconnectionLock.Lock()
+	defer p.reconnectionLock.Unlock()
+
+	if !p.connectionInFlight {
+		p.connectionInFlight = true
+
+		// We wait a little bit before allowing a reconnect to happen
+		// to ensure we are not bombarding the RabbitMQ with reconnection attempts.
+		time.Sleep(time.Second)
+
+		p.connectOnce = sync.Once{}
+	}
 }
 
 func (p *Publisher) Close() {
