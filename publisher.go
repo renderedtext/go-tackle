@@ -1,6 +1,10 @@
 package tackle
 
 import (
+	"context"
+	"errors"
+	"sync"
+
 	rabbit "github.com/rabbitmq/amqp091-go"
 )
 
@@ -22,7 +26,6 @@ func PublishMessage(params *PublishParams) error {
 		return err
 	}
 
-	err = publisher.Connect()
 	defer publisher.Close()
 
 	if err != nil {
@@ -42,10 +45,13 @@ type Publish interface {
 }
 
 type Publisher struct {
-	connection *rabbit.Connection
-	channel    *rabbit.Channel
-	logger     Logger
-	amqpURL    string
+	connection       *rabbit.Connection
+	connectOnce      sync.Once
+	connectionErr    error
+	reconnectionLock sync.Mutex
+
+	logger  Logger
+	amqpURL string
 }
 
 func NewPublisher(amqpURL string) (*Publisher, error) {
@@ -59,50 +65,82 @@ func (p *Publisher) SetLogger(l Logger) {
 	p.logger = l
 }
 
-func (p *Publisher) Connect() error {
-	connection, err := rabbit.Dial(p.amqpURL)
+func (p *Publisher) getConnection() (*rabbit.Connection, error) {
+	p.connectOnce.Do(func() {
+		p.logger.Infof("Connection is closed - connecting...")
+		p.connection, p.connectionErr = rabbit.Dial(p.amqpURL)
+	})
+
+	return p.connection, p.connectionErr
+}
+
+func (p *Publisher) ExchangeDeclare(exchange string) error {
+	connection, err := p.getConnection()
 	if err != nil {
 		return err
 	}
-
-	p.connection = connection
 
 	channel, err := connection.Channel()
 	if err != nil {
 		return err
 	}
 
-	p.channel = channel
-
-	return nil
-}
-
-func (p *Publisher) ExchangeDeclare(exchange string) error {
-	return p.channel.ExchangeDeclare(exchange, "direct", Durable, AutoDeleted, Internal, NoWait, nil)
+	return channel.ExchangeDeclare(exchange, "direct", Durable, AutoDeleted, Internal, NoWait, nil)
 }
 
 func (p *Publisher) Publish(params *PublishParams) error {
-	msg := rabbit.Publishing{
-		Body:         params.Body,
-		Headers:      params.Headers,
-		DeliveryMode: rabbit.Persistent,
+	return p.PublishWithContext(context.Background(), params)
+}
+
+func (p *Publisher) PublishWithContext(ctx context.Context, params *PublishParams) error {
+	connection, err := p.getConnection()
+	if err != nil {
+		return err
 	}
 
-	return p.channel.Publish(params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, msg)
+	channel, err := connection.Channel()
+	if err == nil {
+		defer channel.Close()
+
+		msg := rabbit.Publishing{
+			Body:         params.Body,
+			Headers:      params.Headers,
+			DeliveryMode: rabbit.Persistent,
+		}
+
+		return channel.PublishWithContext(ctx, params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, msg)
+	}
+
+	// If we're not dealing with the connection being closed, just return.
+	if !errors.Is(err, rabbit.ErrClosed) {
+		return err
+	}
+
+	// If the connection is closed, we try to re-connect.
+	// After that, we re-publish the message.
+	return p.reconnectAndPublish(ctx, params)
+}
+
+func (p *Publisher) reconnectAndPublish(ctx context.Context, params *PublishParams) error {
+	p.reconnectionLock.Lock()
+	defer p.reconnectionLock.Unlock()
+
+	// We only update the sync.Once controlling the connection if the connection is closed.
+	// The connection being closed should only happen for the first message coming through.
+	if p.connection.IsClosed() {
+		p.connectOnce = sync.Once{}
+	}
+
+	return p.PublishWithContext(ctx, params)
 }
 
 func (p *Publisher) Close() {
-	if p.channel != nil && !p.channel.IsClosed() {
-		err := p.channel.Close()
-		if err != nil {
-			p.logger.Errorf("failed to close publisher channel %v", err)
-		}
-	}
-
 	if p.connection != nil && !p.connection.IsClosed() {
 		err := p.connection.Close()
 		if err != nil {
 			p.logger.Errorf("failed to close publisher connection %v", err)
 		}
+
+		p.connection = nil
 	}
 }
