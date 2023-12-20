@@ -3,11 +3,14 @@ package tackle
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
 	rabbit "github.com/rabbitmq/amqp091-go"
 )
+
+const defaultConnectionTimeout = 5 * time.Second
 
 type PublishParams struct {
 	Body    []byte
@@ -22,7 +25,7 @@ type PublishParams struct {
 }
 
 func PublishMessage(params *PublishParams) error {
-	publisher, err := NewPublisher(params.AmqpURL, nil)
+	publisher, err := NewPublisher(params.AmqpURL, PublisherOptions{})
 	if err != nil {
 		return err
 	}
@@ -46,7 +49,9 @@ type Publish interface {
 }
 
 type Publisher struct {
+	connectionName     string
 	connection         *rabbit.Connection
+	connectionTimeout  time.Duration
 	connectFunc        func() (*rabbit.Connection, error)
 	connectOnce        sync.Once
 	connectionErr      error
@@ -57,18 +62,38 @@ type Publisher struct {
 	amqpURL string
 }
 
-func NewPublisher(amqpURL string, connectFunc func() (*rabbit.Connection, error)) (*Publisher, error) {
+type PublisherOptions struct {
+	ConnectionName    string
+	ConnectionTimeout time.Duration
+	ConnectFunc       func() (*rabbit.Connection, error)
+}
+
+func NewPublisher(amqpURL string, options PublisherOptions) (*Publisher, error) {
 	p := Publisher{
-		logger:      &defaultLogger{},
-		amqpURL:     amqpURL,
-		connectFunc: connectFunc,
+		logger:            &defaultLogger{},
+		amqpURL:           amqpURL,
+		connectionName:    options.ConnectionName,
+		connectFunc:       options.ConnectFunc,
+		connectionTimeout: options.ConnectionTimeout,
 	}
 
 	if p.connectFunc == nil {
 		p.connectFunc = p.connect
 	}
 
+	if p.connectionName == "" {
+		p.connectionName = "go-tackle-publisher"
+	}
+
+	if p.connectionTimeout == 0 {
+		p.connectionTimeout = defaultConnectionTimeout
+	}
+
 	return &p, nil
+}
+
+func (p *Publisher) SetConnectionName(connName string) {
+	p.connectionName = connName
 }
 
 func (p *Publisher) SetLogger(l Logger) {
@@ -77,7 +102,27 @@ func (p *Publisher) SetLogger(l Logger) {
 
 func (p *Publisher) connect() (*rabbit.Connection, error) {
 	p.logger.Infof("Connecting...")
-	return rabbit.Dial(p.amqpURL)
+
+	config := rabbit.Config{
+		Properties: rabbit.Table{"connection_name": p.connectionName},
+		Dial: func(network, addr string) (net.Conn, error) {
+			conn, err := net.DialTimeout(network, addr, p.connectionTimeout)
+			if err != nil {
+				return nil, err
+			}
+
+			// Heartbeating hasn't started yet, don't stall forever on a dead server.
+			// A deadline is set for TLS and AMQP handshaking. After AMQP is established,
+			// the deadline is cleared in openComplete.
+			if err := conn.SetDeadline(time.Now().Add(p.connectionTimeout)); err != nil {
+				return nil, err
+			}
+
+			return conn, nil
+		},
+	}
+
+	return rabbit.DialConfig(p.amqpURL, config)
 }
 
 func (p *Publisher) getConnection() (*rabbit.Connection, error) {

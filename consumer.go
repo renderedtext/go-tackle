@@ -21,7 +21,7 @@ const (
 	PrefetchSize  = 0
 	Global        = true
 
-	ConsumerName = ""
+	ConsumerName = "tackle-consumer"
 	Durable      = true
 	Exclusive    = false
 	AutoAck      = false
@@ -89,7 +89,10 @@ func (c *Consumer) Stop() {
 }
 
 func (c *Consumer) connect(options *Options) error {
-	connection, err := rabbit.Dial(options.URL)
+	config := rabbit.Config{Properties: make(rabbit.Table)}
+	config.Properties["connection_name"] = options.ConnectionName
+
+	connection, err := rabbit.DialConfig(options.URL, config)
 	if err != nil {
 		return err
 	}

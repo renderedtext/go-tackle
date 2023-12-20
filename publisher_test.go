@@ -91,7 +91,10 @@ func Test__PublishDoesNotRetryForever(t *testing.T) {
 }
 
 func setup(t *testing.T, counter *struct{ count int }, connectFunc func() (*rabbit.Connection, error)) (*Publisher, *Consumer) {
-	p, err := NewPublisher(options.URL, connectFunc)
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: connectFunc,
+	})
+
 	require.NoError(t, err)
 
 	consumer := NewConsumer()
