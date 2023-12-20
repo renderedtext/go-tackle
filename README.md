@@ -39,7 +39,7 @@ func main() {
 
 ## Publishing messages to a RabbitMQ exchange (advanced)
 
-In the simple publishing mechanism, tacle will open and close a connection
+In the simple publishing mechanism, tackle will open and close a connection
 every time it sends a message. This is fine for sending one or two messages,
 however, if you plan to publish large batches of messages, it will be more
 efficient to create a dedicated publisher that keeps the connection open
@@ -58,17 +58,16 @@ func main() {
   err := publisher.Connect()
   defer publisher.Close()
   if err != nil {
-    log.Info("failed to connect to rabbit mq server %v", err)
+    log.Info("failed to connect to rabbitmq server %v", err)
   }
 
   publishParams := tackle.PublishParams{
     Body:       []byte(`{"user_id": "123"}`),
     RoutingKey: "user-created",
     Exchange:   "user-exchange",
-    AmqpURL:    "guest@localhost:5467",
   }
 
-  err := publish.Publish(&publishParams)
+  err := publisher.PublishWithContext(context.Background(), &publishParams)
   if err != nil {
     log.Info("something went wrong while publishing %v", err)
   }
