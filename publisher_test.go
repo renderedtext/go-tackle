@@ -11,14 +11,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test__Publisher(t *testing.T) {
+func Test__PublishMessage(t *testing.T) {
 	counter := &struct {
 		count int
 	}{}
 
-	p, _ := setup(t, counter, nil)
+	// A publisher is being created here as well,
+	// but I'm only interested in the consumer for this one.
+	p, c := setup(t, counter, nil)
+	defer p.Close()
+	defer c.Stop()
 
+	for i := 0; i < 10; i++ {
+		go func() {
+			require.NoError(t, PublishMessage(&PublishParams{
+				AmqpURL:    options.URL,
+				Body:       []byte(`"{}"`),
+				Exchange:   options.RemoteExchange,
+				RoutingKey: options.RoutingKey,
+			}))
+		}()
+	}
+
+	require.Eventually(t, func() bool { return counter.count == 10 }, 2*time.Second, 100*time.Millisecond)
+	p.Close()
+}
+
+func Test__Publisher(t *testing.T) {
 	t.Run("publish works", func(t *testing.T) {
+		counter := &struct {
+			count int
+		}{}
+
+		p, c := setup(t, counter, nil)
+		defer p.Close()
+		defer c.Stop()
+
 		for i := 0; i < 10; i++ {
 			go func() {
 				require.NoError(t, p.Publish(&PublishParams{
@@ -33,9 +61,23 @@ func Test__Publisher(t *testing.T) {
 	})
 
 	t.Run("publish reconnects if connection is closed", func(t *testing.T) {
-		counter.count = 0
-		require.NoError(t, p.connection.Close())
+		counter := &struct {
+			count int
+		}{}
 
+		p, c := setup(t, counter, nil)
+		defer p.Close()
+		defer c.Stop()
+
+		// Connection is created lazily, so this will create it
+		require.NoError(t, p.Publish(&PublishParams{
+			Body:       []byte(`"{}"`),
+			Exchange:   options.RemoteExchange,
+			RoutingKey: options.RoutingKey,
+		}))
+
+		// Close connection and publish more messages
+		require.NoError(t, p.connection.Close())
 		for i := 0; i < 10; i++ {
 			go func() {
 				require.NoError(t, p.Publish(&PublishParams{
@@ -46,7 +88,8 @@ func Test__Publisher(t *testing.T) {
 			}()
 		}
 
-		require.Eventually(t, func() bool { return counter.count == 10 }, 5*time.Second, 500*time.Millisecond)
+		// Connection is re-created and messages are published
+		require.Eventually(t, func() bool { return counter.count == 11 }, 5*time.Second, 500*time.Millisecond)
 	})
 }
 
@@ -55,9 +98,12 @@ func Test__PublishDoesNotRetryForever(t *testing.T) {
 		count int
 	}{}
 
-	p, _ := setup(t, counter, func() (*rabbit.Connection, error) {
+	p, c := setup(t, counter, func() (*rabbit.Connection, error) {
 		return nil, fmt.Errorf("failed to connect")
 	})
+
+	defer p.Close()
+	defer c.Stop()
 
 	errs := []error{}
 	wg := sync.WaitGroup{}
