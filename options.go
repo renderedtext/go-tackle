@@ -15,6 +15,7 @@ type Options struct {
 	RoutingKey     string
 	RetryDelay     int32
 	RetryLimit     int32
+	OnDeadFunc     func(Delivery)
 }
 
 func (o *Options) GetServiceExchangeName() string {
