@@ -244,7 +244,7 @@ func (c *Consumer) handleError(delivery *rabbit.Delivery, err error) error {
 		return c.sendToDelayQueue(retryCount+1, delivery.Body)
 	}
 
-	return c.sendToDeadQueue(delivery.Body)
+	return c.sendToDeadQueue(delivery)
 }
 
 func (c *Consumer) ackOnSuccessfulSend(delivery *rabbit.Delivery) {
@@ -281,9 +281,13 @@ func (c *Consumer) sendToDelayQueue(retryCount int32, body []byte) error {
 		})
 }
 
-func (c *Consumer) sendToDeadQueue(body []byte) error {
+func (c *Consumer) sendToDeadQueue(delivery *rabbit.Delivery) error {
 	queueName := c.options.GetDeadQueueName()
 	c.logger.Infof("sending message to dead queue %s", queueName)
+
+	if c.options.OnDeadFunc != nil {
+		c.options.OnDeadFunc(NewDelivery(delivery))
+	}
 
 	return c.channel.Publish(
 		"", // exchange
@@ -292,7 +296,7 @@ func (c *Consumer) sendToDeadQueue(body []byte) error {
 		false, // immediate
 		rabbit.Publishing{
 			ContentType: "text/plain",
-			Body:        body,
+			Body:        delivery.Body,
 		})
 }
 

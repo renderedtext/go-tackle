@@ -85,6 +85,7 @@ func TestConsumerRetry(t *testing.T) {
 	//
 	consumer := NewConsumer()
 
+	deadHookExecuted := false
 	options := Options{
 		URL:            "amqp://guest:guest@rabbitmq:5672",
 		RemoteExchange: "test.remote-exchange",
@@ -92,6 +93,9 @@ func TestConsumerRetry(t *testing.T) {
 		RoutingKey:     "test-routing-key",
 		RetryDelay:     1,
 		RetryLimit:     5,
+		OnDeadFunc: func(d Delivery) {
+			deadHookExecuted = true
+		},
 	}
 
 	go consumer.Start(&options, func(d Delivery) error {
@@ -141,6 +145,7 @@ func TestConsumerRetry(t *testing.T) {
 		deadQueue, err := consumer.channel.QueueInspect(options.GetDeadQueueName())
 		assert.Nil(t, err)
 		assert.Equal(t, 1, deadQueue.Messages)
+		assert.True(t, deadHookExecuted)
 	})
 
 	t.Run("the message in the dead queue is the same one as oiginally sent", func(t *testing.T) {
