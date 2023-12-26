@@ -71,7 +71,7 @@ func TestProcessorRanOnceAndPublishWork(t *testing.T) {
 	err := PublishMessage(&params)
 	assert.Nil(t, err)
 
-	assert.Eventually(t, func() bool { return 1 == counter.count }, time.Second, 100*time.Millisecond)
+	assert.Eventually(t, func() bool { return counter.count == 1 }, time.Second, 100*time.Millisecond)
 	consumer.Stop()
 }
 
