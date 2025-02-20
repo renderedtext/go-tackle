@@ -102,7 +102,7 @@ func main() {
 }
 ```
 
-Let's brake down what happens here: We are connecting to the remote exchange
+Let's break down what happens here: We are connecting to the remote exchange
 "user-exchange" and consuming those messages in our local "user-persister" 
 queue.
 
@@ -144,3 +144,7 @@ Visually this looks like this:
        | Consuming Service |                                   |
        +-------------------+ ------------------- (after N err)-+
 ```
+
+## License
+
+This software is licensed under [the Apache 2.0 license](LICENSE).
