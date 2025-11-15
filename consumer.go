@@ -161,7 +161,7 @@ func (c *Consumer) consume() error {
 		c.options.GetQueueName(),
 		ConsumerName,
 		AutoAck,
-		Exclusive,
+		c.options.GetExclusive(),
 		NoLocal,
 		NoWait,
 		nil)

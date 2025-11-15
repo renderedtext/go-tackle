@@ -39,17 +39,17 @@ func ConfigureQueues(channel *rabbit.Channel, options *Options) error {
 		"x-dead-letter-routing-key": options.RoutingKey,
 	}
 
-	_, err := channel.QueueDeclare(options.GetQueueName(), Durable, AutoDeleted, Exclusive, NoWait, nil)
+	_, err := channel.QueueDeclare(options.GetQueueName(), options.GetDurable(), options.GetAutoDeleted(), options.GetExclusive(), NoWait, nil)
 	if err != nil {
 		return err
 	}
 
-	_, err = channel.QueueDeclare(options.GetDeadQueueName(), Durable, AutoDeleted, Exclusive, NoWait, queueOptions)
+	_, err = channel.QueueDeclare(options.GetDeadQueueName(), options.GetDurable(), options.GetAutoDeleted(), options.GetExclusive(), NoWait, queueOptions)
 	if err != nil {
 		return err
 	}
 
-	_, err = channel.QueueDeclare(options.GetDelayQueueName(), Durable, AutoDeleted, Exclusive, NoWait, retryQueueOptions)
+	_, err = channel.QueueDeclare(options.GetDelayQueueName(), options.GetDurable(), options.GetAutoDeleted(), options.GetExclusive(), NoWait, retryQueueOptions)
 	if err != nil {
 		return err
 	}
