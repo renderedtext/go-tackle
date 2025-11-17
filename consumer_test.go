@@ -109,7 +109,7 @@ func TestConsumerRetry(t *testing.T) {
 	//
 	// Phase 2: Purge the dead queue and make sure that we have a clean slate.
 	//
-	purgeDeadQueueInTestsLegacy(t, consumer)
+	purgeDeadQueueInTests(t, consumer, &options)
 
 	//
 	// Phase 3: Publish the message
@@ -307,13 +307,3 @@ func purgeDeadQueueInTests(_ *testing.T, consumer *Consumer, options *Options) {
 	})
 }
 
-func purgeDeadQueueInTestsLegacy(_ *testing.T, consumer *Consumer) {
-	consumer.retryWithConstantWait("purge the dead queue", 5, 1*time.Second, func() error {
-		if consumer.channel == nil {
-			return fmt.Errorf("not yet ready for purging")
-		}
-
-		_, err := consumer.channel.QueuePurge(options.GetDeadQueueName(), false)
-		return err
-	})
-}
