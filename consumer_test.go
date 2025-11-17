@@ -109,7 +109,7 @@ func TestConsumerRetry(t *testing.T) {
 	//
 	// Phase 2: Purge the dead queue and make sure that we have a clean slate.
 	//
-	purgeDeadQueueInTests(t, consumer)
+	purgeDeadQueueInTests(t, consumer, &options)
 
 	//
 	// Phase 3: Publish the message
@@ -156,7 +156,147 @@ func TestConsumerRetry(t *testing.T) {
 	})
 }
 
-func purgeDeadQueueInTests(t *testing.T, consumer *Consumer) {
+func TestProcessorWithRetriesDisabled(t *testing.T) {
+	counter := &struct {
+		count int
+	}{}
+
+	maxRetries := int32(0)
+	optionsWithNoRetries := Options{
+		URL:            "amqp://guest:guest@rabbitmq:5672",
+		RemoteExchange: "test.remote-exchange",
+		Service:        "test.service",
+		RoutingKey:     "test-routing-key",
+		MaxRetries:     &maxRetries,
+	}
+
+	consumer := NewConsumer()
+	go func() {
+		err := consumer.Start(&optionsWithNoRetries, func(delivery Delivery) error {
+			counter.count++
+			return nil
+		})
+		assert.Nil(t, err)
+	}()
+
+	assert.Eventually(t, func() bool { return consumer.State == StateListening }, time.Second, 100*time.Millisecond)
+	params := PublishParams{
+		Body:       []byte("{'test': 'message' }"),
+		Headers:    nil,
+		AmqpURL:    optionsWithNoRetries.URL,
+		RoutingKey: optionsWithNoRetries.RoutingKey,
+		Exchange:   optionsWithNoRetries.RemoteExchange,
+	}
+	err := PublishMessage(&params)
+	assert.Nil(t, err)
+
+	assert.Eventually(t, func() bool { return counter.count == 1 }, time.Second, 100*time.Millisecond)
+	consumer.Stop()
+}
+
+func TestErrorHandlingWithNoRetriesAndNoDeadQueue(t *testing.T) {
+	receivedMessagesCount := 0
+	maxRetries := int32(0)
+	enableDeadQueue := false
+
+	optionsNoRetriesNoDeadQueue := Options{
+		URL:             "amqp://guest:guest@rabbitmq:5672",
+		RemoteExchange:  "test.remote-exchange",
+		Service:         "test.service",
+		RoutingKey:      "test-routing-key",
+		MaxRetries:      &maxRetries,
+		EnableDeadQueue: &enableDeadQueue,
+	}
+
+	consumer := NewConsumer()
+	go consumer.Start(&optionsNoRetriesNoDeadQueue, func(d Delivery) error {
+		receivedMessagesCount++
+		return fmt.Errorf("always fail")
+	})
+	defer consumer.Stop()
+
+	assert.Eventually(t, func() bool { return consumer.State == StateListening }, time.Second, 100*time.Millisecond)
+
+	params := PublishParams{
+		Body:       []byte("hello"),
+		Headers:    nil,
+		AmqpURL:    optionsNoRetriesNoDeadQueue.URL,
+		RoutingKey: optionsNoRetriesNoDeadQueue.RoutingKey,
+		Exchange:   optionsNoRetriesNoDeadQueue.RemoteExchange,
+	}
+	err := PublishMessage(&params)
+	assert.Nil(t, err)
+
+	assert.Eventually(t, func() bool {
+		return receivedMessagesCount >= 1
+	}, 2*time.Second, 100*time.Millisecond)
+
+	time.Sleep(1 * time.Second)
+
+	finalCount := receivedMessagesCount
+	time.Sleep(500 * time.Millisecond)
+
+	assert.Equal(t, finalCount, receivedMessagesCount, "Message should be dropped, not requeued infinitely")
+
+	mainQueue, err := consumer.channel.QueueInspect(optionsNoRetriesNoDeadQueue.GetQueueName())
+	assert.Nil(t, err)
+	assert.Equal(t, 0, mainQueue.Messages)
+}
+
+func TestErrorHandlingWithNoRetriesButDeadQueueEnabled(t *testing.T) {
+	receivedMessagesCount := 0
+	deadHookExecuted := false
+	maxRetries := int32(0)
+
+	optionsNoRetriesWithDeadQueue := Options{
+		URL:            "amqp://guest:guest@rabbitmq:5672",
+		RemoteExchange: "test.remote-exchange",
+		Service:        "test.service",
+		RoutingKey:     "test-routing-key",
+		MaxRetries:     &maxRetries,
+		OnDeadFunc: func(d Delivery) {
+			deadHookExecuted = true
+		},
+	}
+
+	consumer := NewConsumer()
+	go consumer.Start(&optionsNoRetriesWithDeadQueue, func(d Delivery) error {
+		receivedMessagesCount++
+		return fmt.Errorf("always fail")
+	})
+	defer consumer.Stop()
+
+	assert.Eventually(t, func() bool { return consumer.State == StateListening }, time.Second, 100*time.Millisecond)
+
+	purgeDeadQueueInTests(t, consumer, &optionsNoRetriesWithDeadQueue)
+
+	params := PublishParams{
+		Body:       []byte("hello"),
+		Headers:    nil,
+		AmqpURL:    optionsNoRetriesWithDeadQueue.URL,
+		RoutingKey: optionsNoRetriesWithDeadQueue.RoutingKey,
+		Exchange:   optionsNoRetriesWithDeadQueue.RemoteExchange,
+	}
+	err := PublishMessage(&params)
+	assert.Nil(t, err)
+
+	assert.Eventually(t, func() bool {
+		return receivedMessagesCount >= 1
+	}, 2*time.Second, 100*time.Millisecond)
+
+	assert.Eventually(t, func() bool {
+		deadQueue, err := consumer.channel.QueueInspect(optionsNoRetriesWithDeadQueue.GetDeadQueueName())
+		return err == nil && deadQueue.Messages == 1
+	}, 2*time.Second, 100*time.Millisecond)
+
+	assert.True(t, deadHookExecuted)
+
+	mainQueue, err := consumer.channel.QueueInspect(optionsNoRetriesWithDeadQueue.GetQueueName())
+	assert.Nil(t, err)
+	assert.Equal(t, 0, mainQueue.Messages)
+}
+
+func purgeDeadQueueInTests(_ *testing.T, consumer *Consumer, options *Options) {
 	consumer.retryWithConstantWait("purge the dead queue", 5, 1*time.Second, func() error {
 		if consumer.channel == nil {
 			return fmt.Errorf("not yet ready for purging")
@@ -166,3 +306,4 @@ func purgeDeadQueueInTests(t *testing.T, consumer *Consumer) {
 		return err
 	})
 }
+

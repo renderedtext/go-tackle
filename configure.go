@@ -29,29 +29,33 @@ func ConfigureExchanges(channel *rabbit.Channel, options *Options) error {
 }
 
 func ConfigureQueues(channel *rabbit.Channel, options *Options) error {
-	queueOptions := map[string]interface{}{
-		"x-message-ttl": DeadLetterTimeout,
-	}
-
-	retryQueueOptions := map[string]interface{}{
-		"x-message-ttl":             options.GetRetryDelay() * 1000,
-		"x-dead-letter-exchange":    options.GetServiceExchangeName(),
-		"x-dead-letter-routing-key": options.RoutingKey,
-	}
-
-	_, err := channel.QueueDeclare(options.GetQueueName(), Durable, AutoDeleted, Exclusive, NoWait, nil)
+	_, err := channel.QueueDeclare(options.GetQueueName(), options.GetDurable(), options.GetAutoDeleted(), options.GetExclusive(), NoWait, nil)
 	if err != nil {
 		return err
 	}
 
-	_, err = channel.QueueDeclare(options.GetDeadQueueName(), Durable, AutoDeleted, Exclusive, NoWait, queueOptions)
-	if err != nil {
-		return err
+	if options.GetEnableDeadQueue() {
+		queueOptions := map[string]interface{}{
+			"x-message-ttl": DeadLetterTimeout,
+		}
+
+		_, err = channel.QueueDeclare(options.GetDeadQueueName(), options.GetDurable(), options.GetAutoDeleted(), options.GetExclusive(), NoWait, queueOptions)
+		if err != nil {
+			return err
+		}
 	}
 
-	_, err = channel.QueueDeclare(options.GetDelayQueueName(), Durable, AutoDeleted, Exclusive, NoWait, retryQueueOptions)
-	if err != nil {
-		return err
+	if options.GetMaxRetries() > 0 {
+		retryQueueOptions := map[string]interface{}{
+			"x-message-ttl":             options.GetRetryDelay() * 1000,
+			"x-dead-letter-exchange":    options.GetServiceExchangeName(),
+			"x-dead-letter-routing-key": options.RoutingKey,
+		}
+
+		_, err = channel.QueueDeclare(options.GetDelayQueueName(), options.GetDurable(), options.GetAutoDeleted(), options.GetExclusive(), NoWait, retryQueueOptions)
+		if err != nil {
+			return err
+		}
 	}
 
 	err = channel.QueueBind(options.GetQueueName(), options.RoutingKey, options.GetServiceExchangeName(), NoWait, nil)
