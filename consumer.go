@@ -226,13 +226,20 @@ func (c *Consumer) handleProcessingResult(delivery *rabbit.Delivery, err error) 
 	c.logger.Errorf("failed to process message, err: %s", err.Error())
 
 	if err := c.handleError(delivery, err); err != nil {
-		c.nackOnFailureToSend(delivery)
+		c.nackOnFailureToSend(delivery, err)
 	} else {
 		c.ackOnSuccessfulSend(delivery)
 	}
 }
 
 func (c *Consumer) handleError(delivery *rabbit.Delivery, err error) error {
+	if c.options.GetMaxRetries() == 0 {
+		if c.options.GetEnableDeadQueue() {
+			return c.sendToDeadQueue(delivery)
+		}
+		return err
+	}
+
 	value, keyExists := delivery.Headers["retry_count"]
 	retryCount, keyIsInteger := value.(int32)
 
@@ -240,11 +247,15 @@ func (c *Consumer) handleError(delivery *rabbit.Delivery, err error) error {
 		return c.sendToDelayQueue(1, delivery.Body)
 	}
 
-	if retryCount < c.options.GetRetryLimit() {
+	if retryCount < c.options.GetMaxRetries() {
 		return c.sendToDelayQueue(retryCount+1, delivery.Body)
 	}
 
-	return c.sendToDeadQueue(delivery)
+	if c.options.GetEnableDeadQueue() {
+		return c.sendToDeadQueue(delivery)
+	}
+
+	return err
 }
 
 func (c *Consumer) ackOnSuccessfulSend(delivery *rabbit.Delivery) {
@@ -254,10 +265,14 @@ func (c *Consumer) ackOnSuccessfulSend(delivery *rabbit.Delivery) {
 	}
 }
 
-func (c *Consumer) nackOnFailureToSend(delivery *rabbit.Delivery) {
-	//Nack(false, true) because otherwise the message would just be dropped.
-	//the second parameter is requeue.
-	nackErr := delivery.Nack(false, true)
+func (c *Consumer) nackOnFailureToSend(delivery *rabbit.Delivery, originalErr error) {
+	requeue := true
+	if c.options.GetMaxRetries() == 0 && !c.options.GetEnableDeadQueue() {
+		requeue = false
+		c.logger.Infof("dropping message (no retries, no dead queue): %s", originalErr.Error())
+	}
+
+	nackErr := delivery.Nack(false, requeue)
 	if nackErr != nil {
 		c.logger.Errorf("failed to Nack %v on handleError", delivery.Body)
 	}
