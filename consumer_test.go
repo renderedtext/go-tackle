@@ -236,7 +236,7 @@ func TestErrorHandlingWithNoRetriesAndNoDeadQueue(t *testing.T) {
 	finalCount := receivedMessagesCount
 	time.Sleep(500 * time.Millisecond)
 
-	assert.InDelta(t, finalCount, receivedMessagesCount, 1, "Message should be dropped, not requeued infinitely")
+	assert.Equal(t, finalCount, receivedMessagesCount, "Message should be dropped, not requeued infinitely")
 
 	mainQueue, err := consumer.channel.QueueInspect(optionsNoRetriesNoDeadQueue.GetQueueName())
 	assert.Nil(t, err)
