@@ -1,6 +1,7 @@
 package tackle
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -109,5 +110,100 @@ func TestDeadQueueOptions(t *testing.T) {
 
 	if opts.GetEnableDeadQueue() != true {
 		t.Errorf("Expected EnableDeadQueue to be true, got %v", opts.GetEnableDeadQueue())
+	}
+}
+
+func TestRetryAndDeadQueueBehavior(t *testing.T) {
+	testCases := []struct {
+		name               string
+		maxRetries         *int32
+		enableDeadQueue    *bool
+		expectedMaxRetries int32
+		expectedDeadQueue  bool
+	}{
+		{"Default behavior", nil, nil, DefaultRetryLimit, true},
+		{"No retries, dead queue enabled", intPtr(0), nil, 0, true},
+		{"No retries, no dead queue", intPtr(0), boolPtr(false), 0, false},
+		{"Custom retries, no dead queue", intPtr(3), boolPtr(false), 3, false},
+		{"Custom retries, dead queue enabled", intPtr(5), boolPtr(true), 5, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &Options{
+				MaxRetries:      tc.maxRetries,
+				EnableDeadQueue: tc.enableDeadQueue,
+			}
+
+			if opts.GetMaxRetries() != tc.expectedMaxRetries {
+				t.Errorf("Expected MaxRetries to be %v, got %v", tc.expectedMaxRetries, opts.GetMaxRetries())
+			}
+
+			if opts.GetEnableDeadQueue() != tc.expectedDeadQueue {
+				t.Errorf("Expected EnableDeadQueue to be %v, got %v", tc.expectedDeadQueue, opts.GetEnableDeadQueue())
+			}
+		})
+	}
+}
+
+func intPtr(i int32) *int32 {
+	return &i
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+func TestQueueConfigurationBehavior(t *testing.T) {
+	testCases := []struct {
+		name             string
+		maxRetries       *int32
+		enableDeadQueue  *bool
+		expectRetryQueue bool
+		expectDeadQueue  bool
+		errorBehavior    string
+	}{
+		{"Default behavior", nil, nil, true, true, "retry then dead queue"},
+		{"No retries, dead queue enabled", intPtr(0), nil, false, true, "direct to dead queue"},
+		{"No retries, no dead queue", intPtr(0), boolPtr(false), false, false, "drop message"},
+		{"Custom retries, no dead queue", intPtr(3), boolPtr(false), true, false, "retry then requeue"},
+		{"Custom retries, dead queue enabled", intPtr(5), boolPtr(true), true, true, "retry then dead queue"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &Options{
+				Service:         "test-service",
+				RoutingKey:      "test-key",
+				MaxRetries:      tc.maxRetries,
+				EnableDeadQueue: tc.enableDeadQueue,
+			}
+
+			shouldCreateRetryQueue := opts.GetMaxRetries() > 0
+			shouldCreateDeadQueue := opts.GetEnableDeadQueue()
+
+			if shouldCreateRetryQueue != tc.expectRetryQueue {
+				t.Errorf("Expected retry queue creation to be %v, got %v", tc.expectRetryQueue, shouldCreateRetryQueue)
+			}
+
+			if shouldCreateDeadQueue != tc.expectDeadQueue {
+				t.Errorf("Expected dead queue creation to be %v, got %v", tc.expectDeadQueue, shouldCreateDeadQueue)
+			}
+
+			// Test queue naming works correctly
+			if tc.expectDeadQueue {
+				expectedDeadQueue := "test-service.test-key.dead"
+				if opts.GetDeadQueueName() != expectedDeadQueue {
+					t.Errorf("Expected dead queue name to be %s, got %s", expectedDeadQueue, opts.GetDeadQueueName())
+				}
+			}
+
+			if tc.expectRetryQueue {
+				expectedDelayQueue := "test-service.test-key.delay." + fmt.Sprintf("%d", opts.GetRetryDelay())
+				if opts.GetDelayQueueName() != expectedDelayQueue {
+					t.Errorf("Expected delay queue name to be %s, got %s", expectedDelayQueue, opts.GetDelayQueueName())
+				}
+			}
+		})
 	}
 }
