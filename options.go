@@ -20,6 +20,9 @@ type Options struct {
 	Durable     *bool
 	AutoDeleted *bool
 	Exclusive   *bool
+
+	MaxRetries      *int32
+	EnableDeadQueue *bool
 }
 
 func (o *Options) GetServiceExchangeName() string {
@@ -79,4 +82,18 @@ func (o *Options) GetExclusive() bool {
 		return *o.Exclusive
 	}
 	return false
+}
+
+func (o *Options) GetMaxRetries() int32 {
+	if o.MaxRetries != nil {
+		return *o.MaxRetries
+	}
+	return o.GetRetryLimit()
+}
+
+func (o *Options) GetEnableDeadQueue() bool {
+	if o.EnableDeadQueue != nil {
+		return *o.EnableDeadQueue
+	}
+	return true
 }

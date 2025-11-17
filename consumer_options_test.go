@@ -67,3 +67,47 @@ func TestHelperFunctions(t *testing.T) {
 		t.Errorf("Expected Exclusive to be true, got %v", opts.GetExclusive())
 	}
 }
+
+func TestMaxRetriesOptions(t *testing.T) {
+	opts := &Options{}
+
+	if opts.GetMaxRetries() != DefaultRetryLimit {
+		t.Errorf("Expected default MaxRetries to be %v, got %v", DefaultRetryLimit, opts.GetMaxRetries())
+	}
+
+	maxRetries := int32(5)
+	opts.MaxRetries = &maxRetries
+
+	if opts.GetMaxRetries() != 5 {
+		t.Errorf("Expected MaxRetries to be 5, got %v", opts.GetMaxRetries())
+	}
+
+	zeroRetries := int32(0)
+	opts.MaxRetries = &zeroRetries
+
+	if opts.GetMaxRetries() != 0 {
+		t.Errorf("Expected MaxRetries to be 0, got %v", opts.GetMaxRetries())
+	}
+}
+
+func TestDeadQueueOptions(t *testing.T) {
+	opts := &Options{}
+
+	if opts.GetEnableDeadQueue() != true {
+		t.Errorf("Expected default EnableDeadQueue to be true, got %v", opts.GetEnableDeadQueue())
+	}
+
+	enableDeadQueue := false
+	opts.EnableDeadQueue = &enableDeadQueue
+
+	if opts.GetEnableDeadQueue() != false {
+		t.Errorf("Expected EnableDeadQueue to be false, got %v", opts.GetEnableDeadQueue())
+	}
+
+	enableDeadQueueTrue := true
+	opts.EnableDeadQueue = &enableDeadQueueTrue
+
+	if opts.GetEnableDeadQueue() != true {
+		t.Errorf("Expected EnableDeadQueue to be true, got %v", opts.GetEnableDeadQueue())
+	}
+}
