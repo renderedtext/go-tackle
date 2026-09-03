@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,6 +92,69 @@ func Test__Publisher(t *testing.T) {
 		// Connection is re-created and messages are published
 		require.Eventually(t, func() bool { return counter.count == 11 }, 5*time.Second, 500*time.Millisecond)
 	})
+}
+
+func Test__PublisherConcurrentReconnectIsRaceFree(t *testing.T) {
+	var dials int32
+	var mu sync.Mutex
+	var conns []*rabbit.Connection
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			conn, err := rabbit.Dial(options.URL)
+			if err != nil {
+				return nil, err
+			}
+
+			atomic.AddInt32(&dials, 1)
+			mu.Lock()
+			conns = append(conns, conn)
+			mu.Unlock()
+			return conn, nil
+		},
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	require.NoError(t, p.ExchangeDeclare(options.RemoteExchange))
+
+	// Establish the shared connection.
+	require.NoError(t, p.Publish(&PublishParams{
+		Body:       []byte(`"{}"`),
+		Exchange:   options.RemoteExchange,
+		RoutingKey: options.RoutingKey,
+	}))
+	require.Equal(t, int32(1), atomic.LoadInt32(&dials))
+
+	// Drop the connection, then publish concurrently: all must recover on a
+	// single shared reconnect. The previous implementation tripped -race here.
+	mu.Lock()
+	first := conns[0]
+	mu.Unlock()
+	require.NoError(t, first.Close())
+
+	wg := sync.WaitGroup{}
+	errs := make(chan error, 50)
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- p.Publish(&PublishParams{
+				Body:       []byte(`"{}"`),
+				Exchange:   options.RemoteExchange,
+				RoutingKey: options.RoutingKey,
+			})
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, int32(2), atomic.LoadInt32(&dials), "one initial dial plus exactly one reconnect")
 }
 
 func Test__PublishDoesNotRetryForever(t *testing.T) {

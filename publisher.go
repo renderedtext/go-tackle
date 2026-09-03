@@ -3,6 +3,7 @@ package tackle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -10,7 +11,15 @@ import (
 	rabbit "github.com/rabbitmq/amqp091-go"
 )
 
-const defaultConnectionTimeout = 5 * time.Second
+const (
+	defaultConnectionTimeout = 5 * time.Second
+	reconnectDelay           = time.Second
+)
+
+// errConnectionUnavailable marks failures that are worth retrying on a fresh
+// connection (dial failure or a closed connection), as opposed to a publish
+// that the broker actively rejected, which is returned to the caller as-is.
+var errConnectionUnavailable = errors.New("connection unavailable")
 
 type PublishParams struct {
 	Body    []byte
@@ -32,10 +41,6 @@ func PublishMessage(params *PublishParams) error {
 
 	defer publisher.Close()
 
-	if err != nil {
-		return err
-	}
-
 	err = publisher.ExchangeDeclare(params.Exchange)
 	if err != nil {
 		return err
@@ -49,17 +54,18 @@ type Publish interface {
 }
 
 type Publisher struct {
-	connectionName     string
-	connection         *rabbit.Connection
-	connectionTimeout  time.Duration
-	connectFunc        func() (*rabbit.Connection, error)
-	connectOnce        sync.Once
-	connectionErr      error
-	reconnectionLock   sync.Mutex
-	connectionInFlight bool
+	connectionName    string
+	connectionTimeout time.Duration
+	connectFunc       func() (*rabbit.Connection, error)
 
 	logger  Logger
 	amqpURL string
+
+	// mu guards connection. Every read and write of connection goes through
+	// it, so a reconnect can never race a concurrent publish. Only one
+	// goroutine dials at a time; the others reuse the connection it stores.
+	mu         sync.Mutex
+	connection *rabbit.Connection
 }
 
 type PublisherOptions struct {
@@ -126,12 +132,20 @@ func (p *Publisher) connect() (*rabbit.Connection, error) {
 }
 
 func (p *Publisher) getConnection() (*rabbit.Connection, error) {
-	p.connectOnce.Do(func() {
-		p.connection, p.connectionErr = p.connectFunc()
-		p.connectionInFlight = false
-	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	return p.connection, p.connectionErr
+	if p.connection != nil && !p.connection.IsClosed() {
+		return p.connection, nil
+	}
+
+	connection, err := p.connectFunc()
+	if err != nil {
+		return nil, err
+	}
+
+	p.connection = connection
+	return connection, nil
 }
 
 func (p *Publisher) ExchangeDeclare(exchange string) error {
@@ -155,91 +169,72 @@ func (p *Publisher) Publish(params *PublishParams) error {
 
 func (p *Publisher) PublishWithContext(ctx context.Context, params *PublishParams) error {
 	for {
-		select {
-		case <-ctx.Done():
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		err := p.publish(ctx, params)
+		if err == nil {
+			return nil
+		}
+
+		// Only connection-level failures are retryable; a publish the broker
+		// rejected (or a cancelled context) is returned to the caller.
+		if !errors.Is(err, errConnectionUnavailable) {
+			return err
+		}
+
+		p.logger.Errorf("Error publishing %s: %v - retrying", string(params.Body), err)
+		if !wait(ctx, reconnectDelay) {
 			return ctx.Err()
-		default:
-			err := p.publishWithContext(ctx, params)
-			if err == nil {
-				return nil
-			}
-
-			// If this is not a connection error, we return the error.
-			if p.connectionErr == nil {
-				return err
-			}
-
-			p.logger.Errorf("Error getting connection for %s: %v - retrying", string(params.Body), err)
-			p.reconnect()
 		}
 	}
 }
 
-func (p *Publisher) publishWithContext(ctx context.Context, params *PublishParams) error {
+func (p *Publisher) publish(ctx context.Context, params *PublishParams) error {
 	connection, err := p.getConnection()
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errConnectionUnavailable, err)
 	}
 
 	channel, err := connection.Channel()
-	if err == nil {
-		defer channel.Close()
-
-		msg := rabbit.Publishing{
-			Body:         params.Body,
-			Headers:      params.Headers,
-			DeliveryMode: rabbit.Persistent,
+	if err != nil {
+		if errors.Is(err, rabbit.ErrClosed) {
+			return fmt.Errorf("%w: %v", errConnectionUnavailable, err)
 		}
-
-		return channel.PublishWithContext(ctx, params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, msg)
-	}
-
-	// If we're not dealing with the connection being closed, just return.
-	if !errors.Is(err, rabbit.ErrClosed) {
 		return err
 	}
 
-	// If the connection is closed, we try to re-connect.
-	// After that, we re-publish the message.
-	return p.reconnectAndPublish(ctx, params)
+	defer channel.Close()
+
+	return channel.PublishWithContext(ctx, params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, rabbit.Publishing{
+		Body:         params.Body,
+		Headers:      params.Headers,
+		DeliveryMode: rabbit.Persistent,
+	})
 }
 
-func (p *Publisher) reconnectAndPublish(ctx context.Context, params *PublishParams) error {
-	p.reconnectionLock.Lock()
-	defer p.reconnectionLock.Unlock()
+func wait(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 
-	// We only update the sync.Once controlling the connection if the connection is closed.
-	// The connection being closed should only happen for the first message coming through.
-	if !p.connectionInFlight {
-		p.connectionInFlight = true
-		p.connectOnce = sync.Once{}
-	}
-
-	return p.publishWithContext(ctx, params)
-}
-
-func (p *Publisher) reconnect() {
-	p.reconnectionLock.Lock()
-	defer p.reconnectionLock.Unlock()
-
-	if !p.connectionInFlight {
-		p.connectionInFlight = true
-
-		// We wait a little bit before allowing a reconnect to happen
-		// to ensure we are not bombarding the RabbitMQ with reconnection attempts.
-		time.Sleep(time.Second)
-
-		p.connectOnce = sync.Once{}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
 func (p *Publisher) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.connection != nil && !p.connection.IsClosed() {
-		err := p.connection.Close()
-		if err != nil {
+		if err := p.connection.Close(); err != nil {
 			p.logger.Errorf("failed to close publisher connection %v", err)
 		}
-
-		p.connection = nil
 	}
+
+	p.connection = nil
 }
