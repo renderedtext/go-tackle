@@ -133,14 +133,102 @@ func Test__PublisherConcurrentReconnectIsRaceFree(t *testing.T) {
 	mu.Unlock()
 	require.NoError(t, first.Close())
 
+	const publishers = 50
+	start := make(chan struct{})
 	wg := sync.WaitGroup{}
-	errs := make(chan error, 50)
-	for i := 0; i < 50; i++ {
+	errs := make(chan error, publishers)
+	for i := 0; i < publishers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- p.Publish(&PublishParams{
+			<-start
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			errs <- p.PublishWithContext(ctx, &PublishParams{
 				Body:       []byte(`"{}"`),
+				Exchange:   options.RemoteExchange,
+				RoutingKey: options.RoutingKey,
+			})
+		}()
+	}
+
+	close(start) // release all publishers at once to maximise reconnect contention
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, int32(2), atomic.LoadInt32(&dials), "one initial dial plus exactly one shared reconnect")
+}
+
+func Test__PublisherDialInFlightRespectsContext(t *testing.T) {
+	release := make(chan struct{})
+	var dials int32
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			atomic.AddInt32(&dials, 1)
+			<-release // block the in-flight dial until the test releases it
+			return rabbit.Dial(options.URL)
+		},
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	// Leader goroutine: starts the (blocked) dial.
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		_ = p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey})
+	}()
+
+	require.Eventually(t, func() bool { return atomic.LoadInt32(&dials) == 1 }, time.Second, 10*time.Millisecond)
+
+	// A second caller with a short deadline must return at its deadline while
+	// the leader's dial is still in flight — it must not start its own dial.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = p.PublishWithContext(ctx, &PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey})
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, 2*time.Second)
+	require.Equal(t, int32(1), atomic.LoadInt32(&dials), "the waiter must not start a competing dial")
+
+	close(release)
+	<-leaderDone
+}
+
+func Test__PublishDoesNotRetryForever(t *testing.T) {
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			return nil, fmt.Errorf("failed to connect")
+		},
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	const publishers = 10
+	errs := make(chan error, publishers)
+	wg := sync.WaitGroup{}
+
+	for i := 0; i < publishers; i++ {
+		mi := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelFunc()
+
+			errs <- p.PublishWithContext(ctx, &PublishParams{
+				Body:       []byte(fmt.Sprintf(`"%d"`, mi)),
 				Exchange:   options.RemoteExchange,
 				RoutingKey: options.RoutingKey,
 			})
@@ -150,54 +238,12 @@ func Test__PublisherConcurrentReconnectIsRaceFree(t *testing.T) {
 	wg.Wait()
 	close(errs)
 
-	for err := range errs {
-		require.NoError(t, err)
+	count := 0
+	for e := range errs {
+		count++
+		require.ErrorIs(t, e, context.DeadlineExceeded)
 	}
-
-	require.Equal(t, int32(2), atomic.LoadInt32(&dials), "one initial dial plus exactly one reconnect")
-}
-
-func Test__PublishDoesNotRetryForever(t *testing.T) {
-	counter := &struct {
-		count int
-	}{}
-
-	p, c := setup(t, counter, func() (*rabbit.Connection, error) {
-		return nil, fmt.Errorf("failed to connect")
-	})
-
-	defer p.Close()
-	defer c.Stop()
-
-	errs := []error{}
-	wg := sync.WaitGroup{}
-
-	for i := 0; i < 10; i++ {
-		mi := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancelFunc()
-
-			err := p.PublishWithContext(ctx, &PublishParams{
-				Body:       []byte(fmt.Sprintf(`"%d"`, mi)),
-				Exchange:   options.RemoteExchange,
-				RoutingKey: options.RoutingKey,
-			})
-
-			if err != nil {
-				errs = append(errs, err)
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	for _, e := range errs {
-		require.ErrorContains(t, e, "context deadline exceeded")
-	}
+	require.Equal(t, publishers, count)
 }
 
 func setup(t *testing.T, counter *struct{ count int }, connectFunc func() (*rabbit.Connection, error)) (*Publisher, *Consumer) {

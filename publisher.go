@@ -16,9 +16,9 @@ const (
 	reconnectDelay           = time.Second
 )
 
-// errConnectionUnavailable marks failures that are worth retrying on a fresh
-// connection (dial failure or a closed connection), as opposed to a publish
-// that the broker actively rejected, which is returned to the caller as-is.
+// errConnectionUnavailable marks failures worth retrying on a fresh connection
+// (dial failure, or a connection closed before a message could be sent), as
+// opposed to a publish the broker actively rejected, which is returned as-is.
 var errConnectionUnavailable = errors.New("connection unavailable")
 
 type PublishParams struct {
@@ -61,11 +61,13 @@ type Publisher struct {
 	logger  Logger
 	amqpURL string
 
-	// mu guards connection. Every read and write of connection goes through
-	// it, so a reconnect can never race a concurrent publish. Only one
-	// goroutine dials at a time; the others reuse the connection it stores.
+	// mu guards connection, dialing and nextDialAt. Every read and write of
+	// connection goes through it, so a reconnect can never race a concurrent
+	// publish. Dialing itself happens without mu held (see getConnection).
 	mu         sync.Mutex
 	connection *rabbit.Connection
+	dialing    chan struct{}
+	nextDialAt time.Time
 }
 
 type PublisherOptions struct {
@@ -131,25 +133,71 @@ func (p *Publisher) connect() (*rabbit.Connection, error) {
 	return rabbit.DialConfig(p.amqpURL, config)
 }
 
-func (p *Publisher) getConnection() (*rabbit.Connection, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// getConnection returns a live connection. If none exists it dials one, but
+// only a single dial is ever in flight: the first caller becomes the dialer
+// and the rest wait for its result or their own context, whichever comes
+// first. Dialing happens without mu held, so a slow dial never blocks other
+// callers past their deadline, and failed attempts are paced by nextDialAt so
+// an outage cannot turn into a reconnect storm.
+func (p *Publisher) getConnection(ctx context.Context) (*rabbit.Connection, error) {
+	for {
+		p.mu.Lock()
 
-	if p.connection != nil && !p.connection.IsClosed() {
-		return p.connection, nil
+		if p.connection != nil && !p.connection.IsClosed() {
+			connection := p.connection
+			p.mu.Unlock()
+			return connection, nil
+		}
+
+		if p.dialing != nil {
+			dialing := p.dialing
+			p.mu.Unlock()
+
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-dialing:
+				continue
+			}
+		}
+
+		dialing := make(chan struct{})
+		p.dialing = dialing
+		backoff := time.Until(p.nextDialAt)
+		p.mu.Unlock()
+
+		connection, err := p.dial(ctx, backoff)
+
+		p.mu.Lock()
+		if err == nil {
+			p.connection = connection
+		} else {
+			p.nextDialAt = time.Now().Add(reconnectDelay)
+		}
+		p.dialing = nil
+		close(dialing)
+		p.mu.Unlock()
+
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w: %v", errConnectionUnavailable, err)
+		}
+		return connection, nil
+	}
+}
+
+func (p *Publisher) dial(ctx context.Context, backoff time.Duration) (*rabbit.Connection, error) {
+	if backoff > 0 && !wait(ctx, backoff) {
+		return nil, ctx.Err()
 	}
 
-	connection, err := p.connectFunc()
-	if err != nil {
-		return nil, err
-	}
-
-	p.connection = connection
-	return connection, nil
+	return p.connectFunc()
 }
 
 func (p *Publisher) ExchangeDeclare(exchange string) error {
-	connection, err := p.getConnection()
+	connection, err := p.getConnection(context.Background())
 	if err != nil {
 		return err
 	}
@@ -179,27 +227,27 @@ func (p *Publisher) PublishWithContext(ctx context.Context, params *PublishParam
 		}
 
 		// Only connection-level failures are retryable; a publish the broker
-		// rejected (or a cancelled context) is returned to the caller.
+		// rejected (or a cancelled context) is returned to the caller. Pacing
+		// between attempts is handled by getConnection's nextDialAt backoff.
 		if !errors.Is(err, errConnectionUnavailable) {
 			return err
 		}
 
 		p.logger.Errorf("Error publishing %s: %v - retrying", string(params.Body), err)
-		if !wait(ctx, reconnectDelay) {
-			return ctx.Err()
-		}
 	}
 }
 
 func (p *Publisher) publish(ctx context.Context, params *PublishParams) error {
-	connection, err := p.getConnection()
+	connection, err := p.getConnection(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errConnectionUnavailable, err)
+		return err
 	}
 
 	channel, err := connection.Channel()
 	if err != nil {
-		if errors.Is(err, rabbit.ErrClosed) {
+		// A connection that closed before we could open a channel is transient:
+		// no message was sent, so retrying on a fresh connection is safe.
+		if errors.Is(err, rabbit.ErrClosed) || connection.IsClosed() {
 			return fmt.Errorf("%w: %v", errConnectionUnavailable, err)
 		}
 		return err
