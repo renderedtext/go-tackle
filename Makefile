@@ -33,7 +33,7 @@ test:
 # fixtures have pre-existing races out of scope here; this guards the
 # shared-publisher concurrency fix.
 test.race:
-	docker-compose run --rm app go test -race -count=1 -run 'Test__Publisher(Concurrent|DialInFlight|Recovers|Close)|Test__PublishDoesNotRetryForever|Test__ExchangeDeclarePreserves' ./...
+	docker-compose run --rm app go test -race -count=1 -run 'Test__Publisher(Concurrent|DialInFlight|Recovers|Close|Paces|Discards)|Test__PublishDoesNotRetryForever|Test__ExchangeDeclarePreserves' ./...
 
 test.watch:
 	docker-compose run --rm app gotestsum --watch --format short-verbose --junitfile junit-report.xml --packages="./..." -- -p 1

@@ -361,11 +361,16 @@ func Test__PublisherCloseDuringDialDoesNotResurrect(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	publishDone := make(chan error, 1)
 	go func() {
-		_ = p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey})
+		publishDone <- p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey})
 	}()
 
-	<-entered // leader is inside connectFunc, blocked
+	select {
+	case <-entered: // leader is inside connectFunc, blocked
+	case <-time.After(2 * time.Second):
+		t.Fatal("connectFunc was never entered")
+	}
 	p.Close() // close while the dial is in flight
 	close(release)
 
@@ -376,8 +381,73 @@ func Test__PublisherCloseDuringDialDoesNotResurrect(t *testing.T) {
 		return dialed != nil && dialed.IsClosed()
 	}, 3*time.Second, 50*time.Millisecond)
 
-	// A subsequent publish returns a closed error, not a silent reconnect.
+	// The in-flight publish must return a closed error, not resurrect the publisher.
+	select {
+	case err := <-publishDone:
+		require.ErrorIs(t, err, ErrPublisherClosed)
+	case <-time.After(3 * time.Second):
+		t.Fatal("publish goroutine did not return")
+	}
+
+	// A subsequent publish also returns a closed error, not a silent reconnect.
 	require.ErrorIs(t, p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey}), ErrPublisherClosed)
+}
+
+func Test__PublisherPacesReconnectOnDeadConnections(t *testing.T) {
+	var dials int32
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			atomic.AddInt32(&dials, 1)
+			conn, err := rabbit.Dial(options.URL)
+			if err != nil {
+				return nil, err
+			}
+			_ = conn.Close() // hand back a connection that is already dead
+			return conn, nil
+		},
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	require.Error(t, p.PublishWithContext(ctx, &PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey}))
+
+	// reconnectDelay is 1s, so a ~2.5s window allows only a handful of dials.
+	// Without pacing after a successful-but-dead dial this spins into dozens.
+	require.LessOrEqual(t, atomic.LoadInt32(&dials), int32(4), "dead-on-arrival connections must be paced, not spun")
+}
+
+func Test__PublisherDiscardsConnectionDialledWithError(t *testing.T) {
+	var mu sync.Mutex
+	var dialed *rabbit.Connection
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			conn, err := rabbit.Dial(options.URL)
+			if err != nil {
+				return nil, err
+			}
+			mu.Lock()
+			dialed = conn
+			mu.Unlock()
+			return conn, fmt.Errorf("post-connect handshake failed")
+		},
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	require.Error(t, p.PublishWithContext(ctx, &PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey}))
+
+	// A connection returned alongside an error must not leak.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return dialed != nil && dialed.IsClosed()
+	}, 2*time.Second, 50*time.Millisecond)
 }
 
 func Test__ExchangeDeclarePreservesConnectErrorChain(t *testing.T) {

@@ -198,20 +198,33 @@ func (p *Publisher) getConnection(ctx context.Context) (*rabbit.Connection, erro
 // push the next attempt further out, or short-deadline callers would livelock.
 func (p *Publisher) dial(ctx context.Context, backoff time.Duration, dialing chan struct{}) (connection *rabbit.Connection, err error) {
 	attempted := false
+	installed := false
 
 	defer func() {
 		p.mu.Lock()
+		// Pace the next attempt after every real dial — success included — so a
+		// connection that is dead on arrival cannot drive a tight reconnect loop.
+		if attempted {
+			p.nextDialAt = time.Now().Add(reconnectDelay)
+		}
 		switch {
 		case p.closed:
-			// A Close raced this dial; don't resurrect a closed publisher.
-			if connection != nil {
-				go connection.Close()
-			}
-			connection, err = nil, ErrPublisherClosed
-		case err == nil && connection != nil:
+			err = ErrPublisherClosed
+		case err != nil:
+			// keep the dial error
+		case connection == nil:
+			err = errors.New("connect func returned a nil connection")
+		case connection.IsClosed():
+			err = errors.New("connect func returned a closed connection")
+		default:
 			p.connection = connection
-		case attempted:
-			p.nextDialAt = time.Now().Add(reconnectDelay)
+			installed = true
+		}
+		// Any connection we dialled but will not use (Close raced, a (conn, err)
+		// return, or a dead-on-arrival connection) must be closed, bounded, so it
+		// cannot leak a socket and reader goroutine.
+		if connection != nil && !installed {
+			go p.discard(connection)
 		}
 		p.dialing = nil
 		close(dialing)
@@ -223,11 +236,13 @@ func (p *Publisher) dial(ctx context.Context, backoff time.Duration, dialing cha
 	}
 
 	attempted = true
-	connection, err = p.connectFunc()
-	if err == nil && connection == nil {
-		err = errors.New("connect func returned a nil connection")
+	return p.connectFunc()
+}
+
+func (p *Publisher) discard(connection *rabbit.Connection) {
+	if err := connection.CloseDeadline(time.Now().Add(p.connectionTimeout)); err != nil && !errors.Is(err, rabbit.ErrClosed) {
+		p.logger.Errorf("failed to discard publisher connection %v", err)
 	}
-	return connection, err
 }
 
 func (p *Publisher) ExchangeDeclare(exchange string) error {
@@ -289,18 +304,14 @@ func (p *Publisher) publish(ctx context.Context, params *PublishParams) error {
 
 	defer channel.Close()
 
-	err = channel.PublishWithContext(ctx, params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, rabbit.Publishing{
+	// The result of a publish is ambiguous: amqp091 does not guarantee whether
+	// the broker received the message, so its errors (including ErrClosed) are
+	// returned to the caller rather than retried, which could duplicate.
+	return channel.PublishWithContext(ctx, params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, rabbit.Publishing{
 		Body:         params.Body,
 		Headers:      params.Headers,
 		DeliveryMode: rabbit.Persistent,
 	})
-	// amqp091 returns ErrClosed here only when the channel was already closed,
-	// i.e. before anything was written, so retrying cannot duplicate the message.
-	// A raw write error is left to the caller: the message may have been sent.
-	if err != nil && errors.Is(err, rabbit.ErrClosed) {
-		return fmt.Errorf("%w: %w", ErrConnectionUnavailable, err)
-	}
-	return err
 }
 
 func wait(ctx context.Context, d time.Duration) bool {
