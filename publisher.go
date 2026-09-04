@@ -16,10 +16,14 @@ const (
 	reconnectDelay           = time.Second
 )
 
-// errConnectionUnavailable marks failures worth retrying on a fresh connection
-// (dial failure, or a connection closed before a message could be sent), as
+// ErrConnectionUnavailable wraps failures worth retrying on a fresh connection
+// (a dial failure, or a connection closed before a message could be sent), as
 // opposed to a publish the broker actively rejected, which is returned as-is.
-var errConnectionUnavailable = errors.New("connection unavailable")
+// It is exported so callers can classify retryable failures with errors.Is.
+var ErrConnectionUnavailable = errors.New("connection unavailable")
+
+// ErrPublisherClosed is returned once Close has been called.
+var ErrPublisherClosed = errors.New("publisher is closed")
 
 type PublishParams struct {
 	Body    []byte
@@ -61,13 +65,14 @@ type Publisher struct {
 	logger  Logger
 	amqpURL string
 
-	// mu guards connection, dialing and nextDialAt. Every read and write of
-	// connection goes through it, so a reconnect can never race a concurrent
-	// publish. Dialing itself happens without mu held (see getConnection).
+	// mu guards connection, dialing, nextDialAt and closed. Every read and
+	// write of connection goes through it, so a reconnect can never race a
+	// concurrent publish. Dialing itself happens without mu held (see dial).
 	mu         sync.Mutex
 	connection *rabbit.Connection
 	dialing    chan struct{}
 	nextDialAt time.Time
+	closed     bool
 }
 
 type PublisherOptions struct {
@@ -143,6 +148,11 @@ func (p *Publisher) getConnection(ctx context.Context) (*rabbit.Connection, erro
 	for {
 		p.mu.Lock()
 
+		if p.closed {
+			p.mu.Unlock()
+			return nil, ErrPublisherClosed
+		}
+
 		if p.connection != nil && !p.connection.IsClosed() {
 			connection := p.connection
 			p.mu.Unlock()
@@ -166,34 +176,58 @@ func (p *Publisher) getConnection(ctx context.Context) (*rabbit.Connection, erro
 		backoff := time.Until(p.nextDialAt)
 		p.mu.Unlock()
 
-		connection, err := p.dial(ctx, backoff)
-
-		p.mu.Lock()
-		if err == nil {
-			p.connection = connection
-		} else {
-			p.nextDialAt = time.Now().Add(reconnectDelay)
-		}
-		p.dialing = nil
-		close(dialing)
-		p.mu.Unlock()
-
+		connection, err := p.dial(ctx, backoff, dialing)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 				return nil, err
 			}
-			return nil, fmt.Errorf("%w: %v", errConnectionUnavailable, err)
+			if errors.Is(err, ErrPublisherClosed) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w: %w", ErrConnectionUnavailable, err)
 		}
 		return connection, nil
 	}
 }
 
-func (p *Publisher) dial(ctx context.Context, backoff time.Duration) (*rabbit.Connection, error) {
+// dial performs a single dial attempt on behalf of all current waiters. It
+// always releases the dialing latch and records the outcome under mu — even if
+// connectFunc panics — so a recovered panic cannot wedge the publisher. The
+// backoff is only applied to, and nextDialAt only re-armed by, an attempt that
+// actually called connectFunc: a caller that abandons during backoff must not
+// push the next attempt further out, or short-deadline callers would livelock.
+func (p *Publisher) dial(ctx context.Context, backoff time.Duration, dialing chan struct{}) (connection *rabbit.Connection, err error) {
+	attempted := false
+
+	defer func() {
+		p.mu.Lock()
+		switch {
+		case p.closed:
+			// A Close raced this dial; don't resurrect a closed publisher.
+			if connection != nil {
+				go connection.Close()
+			}
+			connection, err = nil, ErrPublisherClosed
+		case err == nil && connection != nil:
+			p.connection = connection
+		case attempted:
+			p.nextDialAt = time.Now().Add(reconnectDelay)
+		}
+		p.dialing = nil
+		close(dialing)
+		p.mu.Unlock()
+	}()
+
 	if backoff > 0 && !wait(ctx, backoff) {
 		return nil, ctx.Err()
 	}
 
-	return p.connectFunc()
+	attempted = true
+	connection, err = p.connectFunc()
+	if err == nil && connection == nil {
+		err = errors.New("connect func returned a nil connection")
+	}
+	return connection, err
 }
 
 func (p *Publisher) ExchangeDeclare(exchange string) error {
@@ -227,13 +261,13 @@ func (p *Publisher) PublishWithContext(ctx context.Context, params *PublishParam
 		}
 
 		// Only connection-level failures are retryable; a publish the broker
-		// rejected (or a cancelled context) is returned to the caller. Pacing
-		// between attempts is handled by getConnection's nextDialAt backoff.
-		if !errors.Is(err, errConnectionUnavailable) {
+		// rejected (or a cancelled/closed publisher) is returned to the caller.
+		// Pacing between attempts is handled by getConnection's nextDialAt backoff.
+		if !errors.Is(err, ErrConnectionUnavailable) {
 			return err
 		}
 
-		p.logger.Errorf("Error publishing %s: %v - retrying", string(params.Body), err)
+		p.logger.Errorf("Error publishing to %s/%s (%d bytes): %v - retrying", params.Exchange, params.RoutingKey, len(params.Body), err)
 	}
 }
 
@@ -248,18 +282,25 @@ func (p *Publisher) publish(ctx context.Context, params *PublishParams) error {
 		// A connection that closed before we could open a channel is transient:
 		// no message was sent, so retrying on a fresh connection is safe.
 		if errors.Is(err, rabbit.ErrClosed) || connection.IsClosed() {
-			return fmt.Errorf("%w: %v", errConnectionUnavailable, err)
+			return fmt.Errorf("%w: %w", ErrConnectionUnavailable, err)
 		}
 		return err
 	}
 
 	defer channel.Close()
 
-	return channel.PublishWithContext(ctx, params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, rabbit.Publishing{
+	err = channel.PublishWithContext(ctx, params.Exchange, params.RoutingKey, params.IsMandatory, params.IsImmediate, rabbit.Publishing{
 		Body:         params.Body,
 		Headers:      params.Headers,
 		DeliveryMode: rabbit.Persistent,
 	})
+	// amqp091 returns ErrClosed here only when the channel was already closed,
+	// i.e. before anything was written, so retrying cannot duplicate the message.
+	// A raw write error is left to the caller: the message may have been sent.
+	if err != nil && errors.Is(err, rabbit.ErrClosed) {
+		return fmt.Errorf("%w: %w", ErrConnectionUnavailable, err)
+	}
+	return err
 }
 
 func wait(ctx context.Context, d time.Duration) bool {
@@ -276,13 +317,17 @@ func wait(ctx context.Context, d time.Duration) bool {
 
 func (p *Publisher) Close() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.closed = true
+	connection := p.connection
+	p.connection = nil
+	p.mu.Unlock()
 
-	if p.connection != nil && !p.connection.IsClosed() {
-		if err := p.connection.Close(); err != nil {
+	if connection != nil && !connection.IsClosed() {
+		// Bound the close: Connection.Close is a synchronous RPC that, against a
+		// frozen broker, blocks until dead-peer detection. Done outside mu so it
+		// never stalls concurrent publishers.
+		if err := connection.CloseDeadline(time.Now().Add(p.connectionTimeout)); err != nil {
 			p.logger.Errorf("failed to close publisher connection %v", err)
 		}
 	}
-
-	p.connection = nil
 }

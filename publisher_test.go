@@ -265,3 +265,131 @@ func setup(t *testing.T, counter *struct{ count int }, connectFunc func() (*rabb
 	require.Eventually(t, func() bool { return consumer.State == StateListening }, time.Second, 100*time.Millisecond)
 	return p, consumer
 }
+
+func Test__PublisherRecoversAfterFailureWithShortDeadlines(t *testing.T) {
+	var dials int32
+	var healthy atomic.Bool
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			atomic.AddInt32(&dials, 1)
+			if !healthy.Load() {
+				return nil, fmt.Errorf("broker down")
+			}
+			return rabbit.Dial(options.URL)
+		},
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	// One real, failed dial arms the backoff.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	require.Error(t, p.PublishWithContext(ctx, &PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey}))
+	cancel()
+	dialsAfterFailure := atomic.LoadInt32(&dials)
+	require.GreaterOrEqual(t, dialsAfterFailure, int32(1))
+
+	// Broker recovers. Callers with deadlines shorter than reconnectDelay must
+	// still eventually redial and succeed. On the buggy version each such caller
+	// re-armed nextDialAt without dialing, so connectFunc was never called again.
+	healthy.Store(true)
+	recovered := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		err := p.PublishWithContext(ctx, &PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey})
+		cancel()
+		if err == nil {
+			recovered = true
+			break
+		}
+	}
+
+	require.True(t, recovered, "publisher never recovered after the broker came back")
+	require.Greater(t, atomic.LoadInt32(&dials), dialsAfterFailure, "connectFunc was never called again")
+}
+
+func Test__PublisherRecoversFromPanickingConnectFunc(t *testing.T) {
+	var dials int32
+	var panicNext atomic.Bool
+	panicNext.Store(true)
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			atomic.AddInt32(&dials, 1)
+			if panicNext.Swap(false) {
+				panic("connect func boom")
+			}
+			return rabbit.Dial(options.URL)
+		},
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	// A caller (e.g. behind recover middleware) recovers the panic.
+	func() {
+		defer func() { require.NotNil(t, recover(), "expected connectFunc to panic") }()
+		_ = p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey})
+	}()
+
+	// The dialing latch must have been released; the next publish must proceed.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, p.PublishWithContext(ctx, &PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey}))
+	require.Equal(t, int32(2), atomic.LoadInt32(&dials))
+}
+
+func Test__PublisherCloseDuringDialDoesNotResurrect(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	var mu sync.Mutex
+	var dialed *rabbit.Connection
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release
+			conn, err := rabbit.Dial(options.URL)
+			mu.Lock()
+			dialed = conn
+			mu.Unlock()
+			return conn, err
+		},
+	})
+	require.NoError(t, err)
+
+	go func() {
+		_ = p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey})
+	}()
+
+	<-entered // leader is inside connectFunc, blocked
+	p.Close() // close while the dial is in flight
+	close(release)
+
+	// The connection dialled after Close must be closed, not stored.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return dialed != nil && dialed.IsClosed()
+	}, 3*time.Second, 50*time.Millisecond)
+
+	// A subsequent publish returns a closed error, not a silent reconnect.
+	require.ErrorIs(t, p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey}), ErrPublisherClosed)
+}
+
+func Test__ExchangeDeclarePreservesConnectErrorChain(t *testing.T) {
+	sentinel := fmt.Errorf("dial refused by test")
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) { return nil, sentinel },
+	})
+	require.NoError(t, err)
+	defer p.Close()
+
+	err = p.ExchangeDeclare(options.RemoteExchange)
+	require.ErrorIs(t, err, ErrConnectionUnavailable)
+	require.ErrorIs(t, err, sentinel)
+}
