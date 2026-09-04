@@ -393,6 +393,64 @@ func Test__PublisherCloseDuringDialDoesNotResurrect(t *testing.T) {
 	require.ErrorIs(t, p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey}), ErrPublisherClosed)
 }
 
+func Test__PublisherCloseUnblocksBackoffAndFollowers(t *testing.T) {
+	var dials int32
+	secondDial := make(chan struct{}, 1)
+
+	p, err := NewPublisher(options.URL, PublisherOptions{
+		ConnectFunc: func() (*rabbit.Connection, error) {
+			if atomic.AddInt32(&dials, 1) == 1 {
+				conn, err := rabbit.Dial(options.URL)
+				if err != nil {
+					return nil, err
+				}
+				_ = conn.Close() // dead on arrival → arms the ~1s backoff
+				return conn, nil
+			}
+			secondDial <- struct{}{}
+			select {} // a post-Close dial must never reach here
+		},
+	})
+	require.NoError(t, err)
+
+	// Trigger the first (dead-on-arrival) dial to arm nextDialAt (~1s).
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	require.Error(t, p.PublishWithContext(ctx, &PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey}))
+	cancel()
+	require.Equal(t, int32(1), atomic.LoadInt32(&dials))
+
+	// Two background-context publishers: one waits out the backoff (leader), one
+	// waits on the dialing latch (follower). Neither has a deadline of its own.
+	done := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			done <- p.Publish(&PublishParams{Body: []byte(`"{}"`), Exchange: options.RemoteExchange, RoutingKey: options.RoutingKey})
+		}()
+	}
+	time.Sleep(100 * time.Millisecond) // let them reach the backoff / latch waits
+
+	// Close must wake both waiters promptly — well before the ~1s backoff timer
+	// would fire on its own — proving Close participates in cancellation.
+	start := time.Now()
+	p.Close()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			require.ErrorIs(t, err, ErrPublisherClosed)
+		case <-time.After(2 * time.Second):
+			t.Fatal("Close did not unblock a waiter")
+		}
+	}
+	require.Less(t, time.Since(start), 500*time.Millisecond, "Close must promptly unblock backoff/latch waiters")
+	require.Equal(t, int32(1), atomic.LoadInt32(&dials), "connectFunc must not be called after Close")
+
+	select {
+	case <-secondDial:
+		t.Fatal("a dial was started after Close")
+	default:
+	}
+}
+
 func Test__PublisherPacesReconnectOnDeadConnections(t *testing.T) {
 	var dials int32
 

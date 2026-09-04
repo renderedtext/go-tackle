@@ -73,6 +73,10 @@ type Publisher struct {
 	dialing    chan struct{}
 	nextDialAt time.Time
 	closed     bool
+	// closeCh is closed exactly once by Close so backoff waits and followers
+	// waiting on a dial are released promptly instead of blocking on a timer or
+	// an in-flight connect.
+	closeCh chan struct{}
 }
 
 type PublisherOptions struct {
@@ -88,6 +92,7 @@ func NewPublisher(amqpURL string, options PublisherOptions) (*Publisher, error) 
 		connectionName:    options.ConnectionName,
 		connectFunc:       options.ConnectFunc,
 		connectionTimeout: options.ConnectionTimeout,
+		closeCh:           make(chan struct{}),
 	}
 
 	if p.connectFunc == nil {
@@ -128,6 +133,7 @@ func (p *Publisher) connect() (*rabbit.Connection, error) {
 			// A deadline is set for TLS and AMQP handshaking. After AMQP is established,
 			// the deadline is cleared in openComplete.
 			if err := conn.SetDeadline(time.Now().Add(p.connectionTimeout)); err != nil {
+				_ = conn.Close()
 				return nil, err
 			}
 
@@ -166,6 +172,8 @@ func (p *Publisher) getConnection(ctx context.Context) (*rabbit.Connection, erro
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
+			case <-p.closeCh:
+				return nil, ErrPublisherClosed
 			case <-dialing:
 				continue
 			}
@@ -231,8 +239,26 @@ func (p *Publisher) dial(ctx context.Context, backoff time.Duration, dialing cha
 		p.mu.Unlock()
 	}()
 
-	if backoff > 0 && !wait(ctx, backoff) {
-		return nil, ctx.Err()
+	if backoff > 0 {
+		timer := time.NewTimer(backoff)
+		defer timer.Stop()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-p.closeCh:
+			return nil, ErrPublisherClosed
+		case <-timer.C:
+		}
+	}
+
+	// Don't start a dial that Close has already superseded — important for a
+	// slow or blocking connectFunc.
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return nil, ErrPublisherClosed
 	}
 
 	attempted = true
@@ -314,21 +340,12 @@ func (p *Publisher) publish(ctx context.Context, params *PublishParams) error {
 	})
 }
 
-func wait(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
 func (p *Publisher) Close() {
 	p.mu.Lock()
-	p.closed = true
+	if !p.closed {
+		p.closed = true
+		close(p.closeCh)
+	}
 	connection := p.connection
 	p.connection = nil
 	p.mu.Unlock()
