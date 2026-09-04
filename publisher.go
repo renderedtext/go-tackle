@@ -121,6 +121,7 @@ func (p *Publisher) SetLogger(l Logger) {
 func (p *Publisher) connect() (*rabbit.Connection, error) {
 	p.logger.Infof("Connecting...")
 
+	var socket net.Conn
 	config := rabbit.Config{
 		Properties: rabbit.Table{"connection_name": p.connectionName},
 		Dial: func(network, addr string) (net.Conn, error) {
@@ -137,11 +138,20 @@ func (p *Publisher) connect() (*rabbit.Connection, error) {
 				return nil, err
 			}
 
+			socket = conn
 			return conn, nil
 		},
 	}
 
-	return rabbit.DialConfig(p.amqpURL, config)
+	connection, err := rabbit.DialConfig(p.amqpURL, config)
+	// On a TLS-config/handshake failure DialConfig returns (nil, err) without
+	// closing the socket our Dial produced; close it so it can't leak. When it
+	// returns a non-nil connection (including on an AMQP-handshake error) the
+	// caller's discard path closes it, so we leave it alone here.
+	if err != nil && connection == nil && socket != nil {
+		_ = socket.Close()
+	}
+	return connection, err
 }
 
 // getConnection returns a live connection. If none exists it dials one, but
