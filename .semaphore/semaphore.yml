@@ -37,3 +37,8 @@ blocks:
           commands:
             - checkout
             - make test
+
+        - name: Test (race)
+          commands:
+            - checkout
+            - make test.race
